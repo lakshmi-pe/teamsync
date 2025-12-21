@@ -473,11 +473,25 @@ function upsertRow(sheet, data, idColName) {
                     <i className="fas fa-cog"></i> Bridge Setup
                 </h4>
                 <ol className="space-y-3 text-xs text-blue-900 font-medium list-decimal list-inside">
-                    <li>Open your Google Sheet > <strong>Extensions</strong> > <strong>Apps Script</strong>.</li>
-                    <li>Delete any code there and <strong>Paste the Bridge Code</strong> (copy below).</li>
-                    <li>Click <strong>Deploy</strong> > <strong>New Deployment</strong> > Type: <strong>Web App</strong>.</li>
-                    <li>Set 'Who has access' to <strong>Anyone</strong>.</li>
-                    <li>Copy the <strong>Web App URL</strong> and paste it into the <strong>Settings</strong> tab here.</li>
+                  <li>
+                    Open your Google Sheet &gt; <strong>Extensions</strong> &gt;{" "}
+                    <strong>Apps Script</strong>.
+                  </li>
+                  <li>
+                    Delete any code there and <strong>Paste the Bridge Code</strong> (copy
+                    below).
+                  </li>
+                  <li>
+                    Click <strong>Deploy</strong> &gt; <strong>New Deployment</strong> &gt;
+                    {" "}Type: <strong>Web App</strong>.
+                  </li>
+                  <li>
+                    Set &quot;Who has access&quot; to <strong>Anyone</strong>.
+                  </li>
+                  <li>
+                    Copy the <strong>Web App URL</strong> and paste it into the{" "}
+                    <strong>Settings</strong> tab here.
+                  </li>
                 </ol>
                 <div className="flex gap-4 mt-6">
                     <button onClick={copyScript} className="flex-1 py-4 bg-white text-blue-600 border border-blue-200 rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-2">
