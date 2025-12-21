@@ -1,3 +1,4 @@
+
 export interface Status {
   id: string;
   name: string;
@@ -16,36 +17,25 @@ export interface User {
   email: string;
 }
 
-export interface SubTask {
+export interface Project {
   id: string;
-  title: string;
-  completed: boolean;
-}
-
-export interface Comment {
-  id: string;
-  text: string;
-  authorId: string;
-  createdAt: string;
+  name: string;
+  color: string;
 }
 
 export interface Task {
   id: string;
   title: string;
   description?: string;
-  referenceLinks?: string[]; // Array of URLs
-  comments?: Comment[];      // Activity trail
+  referenceLinks?: string[]; // Stored as newline separated string in sheet
+  activityTrail?: string[];  // Stored as newline separated string in sheet
   projectId: string;
   assigneeId: string;
   priorityId: string;
   statusId: string;
   dueDate: string; 
-  subtasks: SubTask[];
-  createdAt: string;
+  subtasks?: string[];       // Stored as newline separated string in sheet
+  updatedAt: string;
 }
 
-export interface Project {
-  id: string;
-  name: string;
-  color: string;
-}
+export type GroupByOption = 'Status' | 'Priority' | 'Assignee' | 'Project';

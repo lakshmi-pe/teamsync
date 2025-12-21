@@ -1,3 +1,4 @@
+
 import { Priority, Project, Status, Task, User } from "./types";
 
 export const DEFAULT_STATUSES: Status[] = [
@@ -34,8 +35,8 @@ export const INITIAL_TASKS: Task[] = [
     title: 'Design Home Page Mockups',
     description: 'Create high-fidelity mockups for the new homepage based on wireframes.',
     referenceLinks: ['https://docs.google.com/document/d/1example'],
-    comments: [
-      { id: 'c1', text: 'Initial design draft completed.', authorId: 'u1', createdAt: new Date().toISOString() }
+    activityTrail: [
+      'Initial design draft completed.'
     ],
     projectId: 'p1',
     assigneeId: 'u1',
@@ -43,24 +44,24 @@ export const INITIAL_TASKS: Task[] = [
     statusId: 's2',
     dueDate: new Date(Date.now() + 86400000 * 2).toISOString().split('T')[0],
     subtasks: [
-      { id: 'st1', title: 'Header section', completed: true },
-      { id: 'st2', title: 'Hero banner', completed: false },
-      { id: 'st3', title: 'Footer', completed: false },
+      'Header section',
+      'Hero banner',
+      'Footer'
     ],
-    createdAt: new Date().toISOString()
+    updatedAt: new Date().toISOString()
   },
   {
     id: 't2',
     title: 'Draft Social Media Posts',
     description: 'Write copy for LinkedIn and Twitter for the product launch.',
     referenceLinks: [],
-    comments: [],
+    activityTrail: [],
     projectId: 'p2',
     assigneeId: 'u2',
     priorityId: 'pr2',
     statusId: 's1',
     dueDate: new Date(Date.now() + 86400000 * 5).toISOString().split('T')[0],
     subtasks: [],
-    createdAt: new Date().toISOString()
+    updatedAt: new Date().toISOString()
   }
 ];

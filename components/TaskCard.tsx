@@ -1,122 +1,109 @@
 
 import React from 'react';
-import { Task, User, Project, Priority } from '../types';
+import { Task, User, Project, Priority, GroupByOption } from '../types';
 
 interface TaskCardProps {
   task: Task;
   assignee?: User;
   project?: Project;
   priority?: Priority;
+  groupBy: GroupByOption;
   onDragStart: (e: React.DragEvent, taskId: string) => void;
   onClick: (task: Task) => void;
 }
 
-const TaskCard: React.FC<TaskCardProps> = ({ task, assignee, project, priority, onDragStart, onClick }) => {
-  const completedSubtasks = (task.subtasks || []).filter(st => st.completed).length;
-  const totalSubtasks = (task.subtasks || []).length;
+const TaskCard: React.FC<TaskCardProps> = ({ 
+  task, 
+  assignee, 
+  project, 
+  priority, 
+  groupBy,
+  onDragStart, 
+  onClick
+}) => {
   const linkCount = task.referenceLinks?.length || 0;
-  const commentCount = task.comments?.length || 0;
+  const trailCount = task.activityTrail?.length || 0;
+  const subtaskCount = task.subtasks?.length || 0;
+  
+  // Date formatting
+  const dueDateObj = new Date(task.dueDate);
+  const isOverdue = dueDateObj < new Date() && task.statusId !== 's4';
+  const dateStr = dueDateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+  // Determine border color based on priority
+  let borderColor = 'border-gray-100';
+  if (priority?.name === 'High') borderColor = 'border-orange-200';
+  if (priority?.name === 'Critical') borderColor = 'border-red-200';
 
   return (
-    <div
-      draggable
+    <div 
+      draggable 
       onDragStart={(e) => onDragStart(e, task.id)}
       onClick={() => onClick(task)}
-      className="bg-white p-5 rounded-3xl shadow-sm border border-gray-100 cursor-pointer hover:shadow-xl hover:border-blue-200 transition-all active:scale-[0.98] mb-4 group"
+      className={`bg-white p-4 rounded-xl shadow-sm border ${borderColor} cursor-grab active:cursor-grabbing hover:shadow-md transition-all group relative overflow-hidden`}
     >
-      {/* Header: Project & Priority */}
-      <div className="flex flex-wrap justify-between items-start gap-2 mb-3">
-        {project && (
-          <span className={`text-[9px] font-black uppercase tracking-wider px-2.5 py-1 rounded-lg ${project.color} shadow-sm border border-white/50`}>
-            {project.name}
-          </span>
-        )}
-        <span className={`text-[9px] font-black px-2.5 py-1 rounded-lg border uppercase tracking-wider shadow-sm ${priority?.color || 'bg-gray-50 border-gray-200'}`}>
-          {priority?.name || 'No Priority'}
-        </span>
-      </div>
-
-      {/* Task Title */}
-      <h3 className="text-gray-900 font-bold text-sm mb-3 line-clamp-2 leading-snug group-hover:text-blue-600 transition-colors">
-        {task.title}
-      </h3>
-      
-      {/* Subtasks Preview */}
-      {totalSubtasks > 0 && (
-        <div className="space-y-1.5 mb-4">
-          {task.subtasks.slice(0, 3).map((st, i) => (
-            <div key={i} className="flex items-center gap-2 text-[10px] text-gray-500 font-medium">
-              <i className={`fas ${st.completed ? 'fa-check-circle text-green-500' : 'fa-circle text-gray-200'} text-[9px]`}></i>
-              <span className={`line-clamp-1 ${st.completed ? 'line-through opacity-60' : ''}`}>{st.title}</span>
-            </div>
-          ))}
-          {totalSubtasks > 3 && (
-            <div className="text-[9px] text-gray-400 font-black uppercase tracking-widest pl-4">
-              + {totalSubtasks - 3} more
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Footer Info: Date, Links, Comments */}
-      <div className="flex items-center gap-4 mb-4 text-gray-400">
-        {task.dueDate && (
-          <div className="flex items-center text-[10px] font-black uppercase tracking-tighter text-gray-500 bg-gray-50 px-2 py-1 rounded-lg">
-            <i className="far fa-calendar-alt mr-1.5 text-[10px] text-blue-400"></i>
-            {new Date(task.dueDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-          </div>
-        )}
-        {linkCount > 0 && (
-          <div className="flex items-center text-[10px] font-black text-blue-500">
-            <i className="fas fa-link mr-1"></i>
-            {linkCount}
-          </div>
-        )}
-        {commentCount > 0 && (
-          <div className="flex items-center text-[10px] font-black text-green-600">
-            <i className="far fa-comment-dots mr-1"></i>
-            {commentCount}
-          </div>
-        )}
-      </div>
-
-      {/* Assignee Footer */}
-      <div className="flex justify-between items-center pt-3 border-t border-gray-50">
-        <div className="flex items-center gap-2">
-          {assignee ? (
-            <>
+      <div className="flex justify-between items-start mb-2">
+        <h4 className="font-semibold text-gray-800 text-sm leading-snug flex-1 mr-2">{task.title}</h4>
+        {/* If grouping by assignee, don't show avatar, etc. Context aware. */}
+        {groupBy !== 'Assignee' && (
+             assignee ? (
               <img 
                 src={assignee.avatar} 
                 alt={assignee.name} 
-                className="w-7 h-7 rounded-xl border-2 border-white shadow-md ring-1 ring-gray-100"
+                className="w-6 h-6 rounded-full border border-white shadow-sm shrink-0"
+                title={assignee.name}
               />
-              <span className="text-[10px] font-black text-gray-700 uppercase tracking-tighter truncate max-w-[100px]">
-                {assignee.name}
-              </span>
-            </>
-          ) : (
-            <>
-              <div className="w-7 h-7 rounded-xl bg-gray-50 border border-gray-100 flex items-center justify-center text-[10px] text-gray-300">
-                <i className="fas fa-user-secret"></i>
+            ) : (
+              <div className="w-6 h-6 rounded-full bg-gray-100 flex items-center justify-center border border-white shrink-0">
+                <i className="fas fa-user text-[10px] text-gray-300"></i>
               </div>
-              <span className="text-[10px] font-black text-gray-300 uppercase tracking-tighter">
-                Unassigned
-              </span>
-            </>
-          )}
+            )
+        )}
+      </div>
+
+      <div className="flex flex-wrap gap-2 mb-3">
+        {groupBy !== 'Project' && project && (
+          <span className={`text-[10px] font-medium px-2 py-0.5 rounded-md truncate max-w-[100px] ${project.color || 'bg-gray-100 text-gray-600'}`}>
+            {project.name}
+          </span>
+        )}
+        {groupBy !== 'Priority' && priority && (
+           <span className={`text-[10px] font-medium px-2 py-0.5 rounded-md ${priority.color}`}>
+             {priority.name}
+           </span>
+        )}
+      </div>
+
+      {task.description && (
+        <p className="text-xs text-gray-500 line-clamp-2 mb-3">
+          {task.description}
+        </p>
+      )}
+
+      {/* Footer Metrics */}
+      <div className="flex items-center justify-between pt-2 border-t border-gray-50">
+        <div className={`flex items-center gap-1.5 text-[11px] font-medium ${isOverdue ? 'text-red-500' : 'text-gray-400'}`}>
+          <i className="far fa-calendar"></i>
+          {dateStr}
         </div>
         
-        {totalSubtasks > 0 && (
-          <div className="flex items-center bg-gray-50 px-2 py-1 rounded-lg border border-gray-100">
-             <div className="w-10 h-1.5 bg-gray-200 rounded-full overflow-hidden mr-2 shadow-inner">
-               <div 
-                 className={`h-full ${completedSubtasks === totalSubtasks ? 'bg-green-500' : 'bg-blue-500'} transition-all`}
-                 style={{ width: `${(completedSubtasks / totalSubtasks) * 100}%` }}
-               ></div>
-             </div>
-             <span className="text-[9px] font-black text-gray-500">{completedSubtasks}/{totalSubtasks}</span>
-          </div>
-        )}
+        <div className="flex gap-3 text-gray-400">
+           {(subtaskCount > 0) && (
+             <span className="text-[10px] flex items-center gap-1" title="Subtasks">
+               <i className="fas fa-list-ul"></i> {subtaskCount}
+             </span>
+           )}
+           {(trailCount > 0) && (
+             <span className="text-[10px] flex items-center gap-1" title="Activity">
+               <i className="far fa-comment-alt"></i> {trailCount}
+             </span>
+           )}
+           {(linkCount > 0) && (
+             <span className="text-[10px] flex items-center gap-1" title="Attachments">
+               <i className="fas fa-paperclip"></i> {linkCount}
+             </span>
+           )}
+        </div>
       </div>
     </div>
   );

@@ -1,542 +1,599 @@
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import * as XLSX from 'xlsx';
-import { Task, User, Project, Priority, Status, Comment, SubTask } from './types';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Task, User, Project, Priority, Status, GroupByOption } from './types';
 import { MOCK_USERS, MOCK_PROJECTS, INITIAL_TASKS, DEFAULT_STATUSES, DEFAULT_PRIORITIES } from './constants';
 import TaskCard from './components/TaskCard';
 import SheetView from './components/SheetView';
-import { parseTaskWithGemini } from './services/geminiService';
-
-type GroupBy = 'Status' | 'Priority' | 'Assignee' | 'Project';
+import SetupGuide from './components/SetupGuide';
 
 function App() {
-  const [viewMode, setViewMode] = useState<'board' | 'sheet'>('board');
-  const [activeSheetTab, setActiveSheetTab] = useState<'tasks' | 'users' | 'projects' | 'config' | 'settings'>('tasks');
-  const [groupBy, setGroupBy] = useState<GroupBy>('Status');
+  const [activeTab, setActiveTab] = useState<'board' | 'sheet' | 'setup'>('board');
+  const [groupBy, setGroupBy] = useState<GroupByOption>('Status');
+  
+  // Data State
   const [tasks, setTasks] = useState<Task[]>(INITIAL_TASKS);
   const [users, setUsers] = useState<User[]>(MOCK_USERS);
   const [projects, setProjects] = useState<Project[]>(MOCK_PROJECTS);
   const [statuses, setStatuses] = useState<Status[]>(DEFAULT_STATUSES);
   const [priorities, setPriorities] = useState<Priority[]>(DEFAULT_PRIORITIES);
   
-  const [filterProject, setFilterProject] = useState<string>('all');
-  const [filterAssignee, setFilterAssignee] = useState<string>('all');
+  // Filters
+  const [filters, setFilters] = useState({
+    project: 'all',
+    assignee: 'all',
+    status: 'all',
+    priority: 'all',
+    search: ''
+  });
   
+  // Sync State
   const [sheetUrl, setSheetUrl] = useState<string>(() => localStorage.getItem('teamSync_sheetUrl') || '');
-  const [draggedOverColumn, setDraggedOverColumn] = useState<string | null>(null);
-
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSynced, setLastSynced] = useState<string>('Never');
-  const [quickAddInput, setQuickAddInput] = useState('');
-  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-  const [commentInput, setCommentInput] = useState('');
-  const [showGuide, setShowGuide] = useState(false);
 
-  // --- SYNC LOGIC ---
+  // UI State
+  const [draggedOverColumn, setDraggedOverColumn] = useState<string | null>(null);
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+
+  // --- SYNC ENGINE ---
+
+  const mapSheetDataToApp = useCallback((data: any) => {
+    // 1. Map Dictionaries
+    const newStatuses = (data.status || []).map((r: any, i: number) => ({ id: r.Name, name: r.Name })); // Name is ID for simplicity in sync
+    const newPriorities = (data.priority || []).map((r: any) => ({ 
+      id: r.Name, 
+      name: r.Name, 
+      color: r.ColorClass || 'bg-gray-100 text-gray-800' 
+    }));
+    const newProjects = (data.projects || []).map((r: any) => ({ 
+      id: r.Name, 
+      name: r.Name, 
+      color: r.ColorHex ? `bg-[${r.ColorHex}]` : 'bg-gray-100' 
+    }));
+    const newUsers = (data.members || []).map((r: any) => ({ 
+      id: r.Name, 
+      name: r.Name, 
+      email: r.Email,
+      avatar: r.AvatarUrl 
+    }));
+
+    // Update Domain Lists
+    if(newStatuses.length) setStatuses(newStatuses);
+    if(newPriorities.length) setPriorities(newPriorities);
+    if(newProjects.length) setProjects(newProjects);
+    if(newUsers.length) setUsers(newUsers);
+
+    // 2. Map Tasks
+    if (data.tasks && Array.isArray(data.tasks)) {
+      const mappedTasks: Task[] = data.tasks.map((t: any) => {
+        return {
+          id: t["ID"] ? String(t["ID"]) : `t${Date.now()}-${Math.random()}`,
+          title: t["Title"] || 'Untitled',
+          description: t["Description"] || '',
+          statusId: t["Status"] || (newStatuses[0]?.id || 'To Do'),
+          priorityId: t["Priority"] || (newPriorities[0]?.id || 'Low'),
+          assigneeId: t["Assignee"] || '',
+          projectId: t["Project"] || '',
+          dueDate: t["DueDate"] ? new Date(t["DueDate"]).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
+          referenceLinks: t["RefLinks"] ? String(t["RefLinks"]).split('\n').filter(Boolean) : [],
+          activityTrail: t["ActivityTrail"] ? String(t["ActivityTrail"]).split('\n').filter(Boolean) : [],
+          subtasks: t["Subtasks"] ? String(t["Subtasks"]).split('\n').filter(Boolean) : [],
+          updatedAt: new Date().toISOString()
+        };
+      });
+      setTasks(mappedTasks);
+    }
+  }, []);
 
   const fetchFromSheet = useCallback(async (url: string) => {
-    if (!url) return;
-    
-    if (url.includes('/edit')) {
-      alert("⚠️ Error: You pasted the Google Sheet/Script Editor URL. Please deploy the script as a 'Web App' and use the URL ending in '/exec'.");
-      return;
-    }
-
+    if (!url || !url.startsWith('http')) return;
     setIsSyncing(true);
-    
     try {
-      const response = await fetch(url, {
-        method: 'GET',
-        mode: 'cors',
-        redirect: 'follow',
-        headers: { 'Accept': 'application/json' }
-      });
-
-      if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
+      const response = await fetch(url, { method: 'GET', redirect: 'follow' });
+      if (!response.ok) throw new Error("Sync Failed");
       const data = await response.json();
-
-      let currentStatuses = statuses;
-      let currentPriorities = priorities;
-      let currentUsers = users;
-      let currentProjects = projects;
-
-      if (data.config && Array.isArray(data.config)) {
-        currentStatuses = data.config
-          .filter((c: any) => c["Status Options"])
-          .map((c: any, i: number) => ({ id: `s${i+1}`, name: c["Status Options"] }));
-        if (currentStatuses.length > 0) setStatuses(currentStatuses);
-
-        currentPriorities = data.config
-          .filter((c: any) => c["Priority Options"])
-          .map((c: any, i: number) => ({ 
-            id: `pr${i+1}`, 
-            name: c["Priority Options"], 
-            color: c["Priority Color Code"] || 'bg-gray-100 text-gray-700 border-gray-200' 
-          }));
-        if (currentPriorities.length > 0) setPriorities(currentPriorities);
-      }
-
-      if (data.members && Array.isArray(data.members)) {
-        currentUsers = data.members.map((m: any) => ({
-          id: m["Internal ID"] || `u${Math.random()}`,
-          name: m["Member Name"] || 'Unknown',
-          email: m["Email Address"] || '',
-          avatar: m["Avatar URL"] || `https://picsum.photos/seed/${m["Member Name"]}/40/40`
-        }));
-        setUsers(currentUsers);
-      }
-
-      if (data.projects && Array.isArray(data.projects)) {
-        currentProjects = data.projects.map((p: any) => ({
-          id: p["Internal ID"] || `p${Math.random()}`,
-          name: p["Project Name"] || 'Untitled Project',
-          color: p["Color Theme"] || 'bg-blue-100 text-blue-800'
-        }));
-        setProjects(currentProjects);
-      }
-
-      if (data.tasks && Array.isArray(data.tasks)) {
-        const mappedTasks: Task[] = data.tasks.map((t: any) => {
-          const sId = currentStatuses.find(s => s.name === t["Status"])?.id || (currentStatuses[0]?.id || 's1');
-          const pId = currentPriorities.find(p => p.name === t["Priority"])?.id || (currentPriorities[1]?.id || 'pr2');
-          const uId = currentUsers.find(u => u.name === t["Assignee"])?.id || '';
-          const projId = currentProjects.find(p => p.name === t["Project"])?.id || '';
-
-          // Parse Subtasks from Checklist format: "[ ] Subtask Name" or "[x] Subtask Name"
-          const rawSubtasks = (t["Subtasks"] || "").split('\n').filter(Boolean);
-          const subtasks: SubTask[] = rawSubtasks.map((st: string, i: number) => {
-            const completed = st.startsWith('[x]');
-            const title = st.replace(/^\[[ x]\]\s*/, '').trim();
-            return { id: `st-${i}-${Date.now()}`, title, completed };
-          });
-
-          const comments: Comment[] = (t["Activity Log"] || "").split('\n').filter(Boolean).map((log: string, i: number) => {
-            const match = log.match(/\[(.*?)\] (.*) \((.*)\)/);
-            return {
-              id: `c${i}-${Date.now()}`,
-              authorId: currentUsers.find(u => u.name === match?.[1])?.id || 'u1',
-              text: match?.[2] || log,
-              createdAt: match?.[3] || new Date().toISOString()
-            };
-          });
-
-          return {
-            id: t["Task ID"] || `t${Date.now()}-${Math.random()}`,
-            title: t["Title"] || 'Untitled Task',
-            description: t["Description"] || '',
-            statusId: sId,
-            priorityId: pId,
-            assigneeId: uId,
-            projectId: projId,
-            dueDate: t["Due Date"] ? new Date(t["Due Date"]).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
-            referenceLinks: (t["Reference Links"] || "").split('\n').filter(Boolean),
-            comments,
-            subtasks,
-            createdAt: new Date().toISOString()
-          };
-        });
-        setTasks(mappedTasks);
-      }
-      
-      setLastSynced(new Date().toLocaleTimeString());
-    } catch (e: any) {
-      console.error("TeamSync Sync Error:", e);
+      mapSheetDataToApp(data);
+      setLastSynced(new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}));
+    } catch (e) {
+      console.error("Sync Error:", e);
+      alert("Could not sync. Check your Bridge URL.");
     } finally {
       setIsSyncing(false);
     }
-  }, [statuses, priorities, users, projects]);
+  }, [mapSheetDataToApp]);
 
   useEffect(() => {
     localStorage.setItem('teamSync_sheetUrl', sheetUrl);
-    if (sheetUrl && lastSynced === 'Never') {
-      fetchFromSheet(sheetUrl);
-    }
-  }, [sheetUrl, fetchFromSheet, lastSynced]);
+  }, [sheetUrl]);
 
-  const pushToSheet = async (task: Task) => {
+  const pushTaskToSheet = async (task: Task) => {
     if (!sheetUrl) return;
     setIsSyncing(true);
     try {
-      const assignee = users.find(u => u.id === task.assigneeId)?.name || '';
-      const project = projects.find(p => p.id === task.projectId)?.name || '';
-      const status = statuses.find(s => s.id === task.statusId)?.name || '';
-      const priority = priorities.find(p => p.id === task.priorityId)?.name || '';
-
-      // Format Subtasks for Sheet
-      const formattedSubtasks = (task.subtasks || []).map(st => `${st.completed ? '[x]' : '[ ]'} ${st.title}`).join('\n');
-
+      // We send friendly names because that's what the sheet expects for dropdowns
       const payload = {
         targetSheet: "Tasks",
         action: "upsert",
-        idColumn: "Task ID",
+        idColumn: "ID",
         data: {
-          "Task ID": task.id,
+          "ID": task.id,
           "Title": task.title,
           "Description": task.description || '',
-          "Status": status,
-          "Priority": priority,
-          "Due Date": task.dueDate,
-          "Assignee": assignee,
-          "Project": project,
-          "Subtasks": formattedSubtasks,
-          "Reference Links": (task.referenceLinks || []).join('\n'),
-          "Activity Log": (task.comments || []).map(c => `[${users.find(u => u.id === c.authorId)?.name || 'User'}] ${c.text} (${c.createdAt})`).join('\n')
+          "Status": task.statusId, // Maps to Name
+          "Priority": task.priorityId, // Maps to Name
+          "DueDate": task.dueDate,
+          "Assignee": task.assigneeId, // Maps to Name
+          "Project": task.projectId, // Maps to Name
+          "RefLinks": (task.referenceLinks || []).join('\n'),
+          "ActivityTrail": (task.activityTrail || []).join('\n'),
+          "Subtasks": (task.subtasks || []).join('\n')
         }
       };
 
       await fetch(sheetUrl, {
         method: 'POST',
-        mode: 'no-cors',
+        mode: 'no-cors', // Apps Script limit
         body: JSON.stringify(payload),
         headers: { 'Content-Type': 'text/plain' }
       });
-      
-      setLastSynced(new Date().toLocaleTimeString());
+      setLastSynced(new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}));
     } catch (e) {
-      console.error("Sync push error:", e);
+      console.error("Push Error:", e);
     } finally {
       setIsSyncing(false);
     }
   };
 
-  const getColumns = useCallback(() => {
-    switch (groupBy) {
-      case 'Status':
-        return statuses.map(s => ({ id: s.id, title: s.name, type: 'status' }));
-      case 'Priority':
-        return priorities.map(p => ({ id: p.id, title: p.name, type: 'priority' }));
-      case 'Assignee': {
-        const assigneeCols = users.map(u => ({ id: u.id, title: u.name, type: 'assignee' }));
-        return [...assigneeCols, { id: 'unassigned', title: 'Unassigned', type: 'assignee' }];
-      }
-      case 'Project': {
-        const projectCols = projects.map(p => ({ id: p.id, title: p.name, type: 'project' }));
-        return [...projectCols, { id: 'no-project', title: 'No Project', type: 'project' }];
-      }
-      default:
-        return [];
-    }
-  }, [groupBy, statuses, priorities, users, projects]);
-
   const handleUpdateTask = (updatedTask: Task) => {
     setTasks(prev => prev.map(t => t.id === updatedTask.id ? updatedTask : t));
     if (selectedTask?.id === updatedTask.id) setSelectedTask(updatedTask);
-    pushToSheet(updatedTask);
+    pushTaskToSheet(updatedTask);
   };
 
-  const handleDragStart = (e: React.DragEvent, taskId: string) => {
-    e.dataTransfer.setData('taskId', taskId);
-    e.dataTransfer.effectAllowed = 'move';
+  const handleDeleteTask = (id: string) => {
+    setTasks(prev => prev.filter(t => t.id !== id));
+    setSelectedTask(null);
+    // In v1, we won't implement robust delete sync in background to avoid complexity, 
+    // but the SheetView hook supports it if we wanted to call it.
   };
 
-  const handleDragOver = (e: React.DragEvent, columnId: string) => {
-    e.preventDefault();
-    setDraggedOverColumn(columnId);
+  // --- VIEW LOGIC ---
+
+  const getColumns = () => {
+    switch (groupBy) {
+      case 'Status': return statuses.map(s => ({ id: s.id, title: s.name, type: 'status' }));
+      case 'Priority': return priorities.map(p => ({ id: p.id, title: p.name, type: 'priority' }));
+      case 'Assignee': return [...users.map(u => ({ id: u.id, title: u.name, type: 'assignee' })), { id: '', title: 'Unassigned', type: 'assignee' }];
+      case 'Project': return [...projects.map(p => ({ id: p.id, title: p.name, type: 'project' })), { id: '', title: 'No Project', type: 'project' }];
+      default: return [];
+    }
   };
 
-  const handleDrop = (e: React.DragEvent, columnId: string, columnType: string) => {
+  const filteredTasks = tasks.filter(t => {
+    const matchesProject = filters.project === 'all' || t.projectId === filters.project;
+    const matchesAssignee = filters.assignee === 'all' || t.assigneeId === filters.assignee;
+    const matchesStatus = filters.status === 'all' || t.statusId === filters.status;
+    const matchesPriority = filters.priority === 'all' || t.priorityId === filters.priority;
+    const matchesSearch = !filters.search || t.title.toLowerCase().includes(filters.search.toLowerCase());
+    return matchesProject && matchesAssignee && matchesStatus && matchesPriority && matchesSearch;
+  });
+
+  const handleDrop = (e: React.DragEvent, colId: string, type: string) => {
     e.preventDefault();
     setDraggedOverColumn(null);
     const taskId = e.dataTransfer.getData('taskId');
     const task = tasks.find(t => t.id === taskId);
-    
     if (task) {
-      const updatedTask = { ...task };
-      switch (columnType) {
-        case 'status': updatedTask.statusId = columnId; break;
-        case 'priority': updatedTask.priorityId = columnId; break;
-        case 'assignee': updatedTask.assigneeId = columnId === 'unassigned' ? '' : columnId; break;
-        case 'project': updatedTask.projectId = columnId === 'no-project' ? '' : columnId; break;
-      }
-      handleUpdateTask(updatedTask);
+      const updates: Partial<Task> = {};
+      if (type === 'status') updates.statusId = colId;
+      if (type === 'priority') updates.priorityId = colId;
+      if (type === 'assignee') updates.assigneeId = colId;
+      if (type === 'project') updates.projectId = colId;
+      handleUpdateTask({ ...task, ...updates });
     }
   };
 
+  // --- NEW TASK ---
   const handleAddTask = () => {
     const newTask: Task = {
       id: `t${Date.now()}`,
       title: 'New Task',
       description: '',
-      referenceLinks: [],
-      comments: [],
-      statusId: statuses[0].id,
-      priorityId: priorities[1].id,
+      statusId: statuses[0]?.id || 'To Do',
+      priorityId: priorities[1]?.id || 'Medium',
+      projectId: filters.project !== 'all' ? filters.project : (projects[0]?.id || ''),
+      assigneeId: filters.assignee !== 'all' ? filters.assignee : '',
       dueDate: new Date().toISOString().split('T')[0],
-      assigneeId: filterAssignee !== 'all' ? filterAssignee : '',
-      projectId: filterProject !== 'all' ? filterProject : '',
+      updatedAt: new Date().toISOString(),
       subtasks: [],
-      createdAt: new Date().toISOString()
+      referenceLinks: [],
+      activityTrail: []
     };
     setTasks(prev => [...prev, newTask]);
-    pushToSheet(newTask);
+    setSelectedTask(newTask);
+    pushTaskToSheet(newTask);
   };
 
-  const handleDeleteTask = (id: string) => {
-    setTasks(prev => prev.filter(t => t.id !== id));
-  };
-
-  const handleAddComment = (taskId: string) => {
-    if (!commentInput.trim()) return;
-    const task = tasks.find(t => t.id === taskId);
-    if (task) {
-      const newComment: Comment = {
-        id: `c${Date.now()}`,
-        text: commentInput,
-        authorId: 'u1', 
-        createdAt: new Date().toISOString()
-      };
-      handleUpdateTask({ ...task, comments: [...(task.comments || []), newComment] });
-      setCommentInput('');
-    }
-  };
-
-  const handleQuickAdd = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!quickAddInput.trim()) return;
-    const parsedData = await parseTaskWithGemini(quickAddInput);
-    if (parsedData) {
-      const newTask: Task = {
-        id: `t${Date.now()}`,
-        title: parsedData.title || quickAddInput,
-        description: parsedData.description || '',
-        referenceLinks: [],
-        comments: [],
-        statusId: statuses[0].id,
-        priorityId: priorities[1].id,
-        dueDate: parsedData.dueDate || new Date().toISOString().split('T')[0],
-        assigneeId: filterAssignee !== 'all' ? filterAssignee : '',
-        projectId: filterProject !== 'all' ? filterProject : '',
-        subtasks: [],
-        createdAt: new Date().toISOString()
-      };
-      setTasks(prev => [...prev, newTask]);
-      setQuickAddInput('');
-      pushToSheet(newTask);
-    }
-  };
-
-  const downloadSampleExcel = () => {
-    const wb = XLSX.utils.book_new();
-    const tasksData = tasks.map(t => ({
-        "Task ID": t.id,
-        "Title": t.title,
-        "Description": t.description || '',
-        "Status": statuses.find(s => s.id === t.statusId)?.name || '',
-        "Priority": priorities.find(p => p.id === t.priorityId)?.name || '',
-        "Due Date": t.dueDate,
-        "Assignee": users.find(u => u.id === t.assigneeId)?.name || '',
-        "Project": projects.find(p => p.id === t.projectId)?.name || '',
-        "Subtasks": (t.subtasks || []).map(st => `${st.completed ? '[x]' : '[ ]'} ${st.title}`).join('\n'),
-        "Reference Links": (t.referenceLinks || []).join('\n'),
-        "Activity Log": (t.comments || []).map(c => `[${users.find(u => u.id === c.authorId)?.name || 'User'}] ${c.text} (${c.createdAt})`).join('\n')
-    }));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(tasksData), "Tasks");
-    XLSX.writeFile(wb, "TeamSync_Master_Database.xlsx");
-  };
+  // --- RENDER ---
 
   return (
-    <div className="min-h-screen flex flex-col bg-gray-50 font-sans">
-      <header className="bg-white border-b border-gray-200 px-6 py-4 sticky top-0 z-40 shadow-sm">
-        <div className="flex flex-col md:flex-row items-center justify-between gap-4">
-          <div className="flex items-center space-x-3">
-            <div className="bg-blue-600 w-8 h-8 rounded-lg flex items-center justify-center text-white shadow-lg shadow-blue-100"><i className="fas fa-check"></i></div>
-            <div>
-              <h1 className="text-xl font-bold text-gray-800">TeamSync</h1>
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">{isSyncing ? 'Syncing...' : `Synced ${lastSynced}`}</span>
-                {sheetUrl && (
-                  <button onClick={() => fetchFromSheet(sheetUrl)} className={`text-[10px] text-blue-500 hover:text-blue-700 font-black uppercase tracking-widest flex items-center gap-1 transition-all ${isSyncing ? 'animate-pulse' : ''}`}>
-                    <i className={`fas fa-sync-alt ${isSyncing ? 'fa-spin' : ''}`}></i> Refresh
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-          <div className="flex-1 max-w-xl w-full">
-            <form onSubmit={handleQuickAdd} className="relative">
-              <input value={quickAddInput} onChange={e => setQuickAddInput(e.target.value)} placeholder="Type a task title and press Enter..." className="w-full pl-10 pr-12 py-2.5 bg-gray-100 border-none rounded-2xl focus:ring-2 focus:ring-blue-500 text-sm transition-all" />
-              <i className="fas fa-plus-circle text-gray-300 absolute left-3.5 top-3.5 text-xs"></i>
-            </form>
-          </div>
-          <div className="flex items-center gap-3">
-             <button onClick={() => setShowGuide(true)} className={`flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-xs transition-all border shadow-sm ${sheetUrl ? 'bg-green-50 text-green-600 border-green-100' : 'bg-orange-50 text-orange-600 border-orange-100 animate-pulse'}`}>
-                <i className={`fas ${sheetUrl ? 'fa-link' : 'fa-plug'} text-[10px]`}></i>
-                {sheetUrl ? 'Active Sync' : 'Setup Required'}
-             </button>
-             <div className="flex bg-gray-100 p-1 rounded-xl border border-gray-200 shadow-inner">
-                <button onClick={() => setViewMode('board')} className={`px-4 py-1.5 rounded-lg text-sm font-bold transition-all ${viewMode === 'board' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500'}`}>Board</button>
-                <button onClick={() => setViewMode('sheet')} className={`px-4 py-1.5 rounded-lg text-sm font-bold transition-all ${viewMode === 'sheet' ? 'bg-white shadow-sm text-green-600' : 'text-gray-500'}`}>Sheet</button>
+    <div className="h-screen flex flex-col bg-gray-50 text-gray-800 font-sans overflow-hidden">
+      {/* Header */}
+      <header className="bg-white px-6 py-3 border-b border-gray-200 flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-3">
+           <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white shadow-lg shadow-blue-100">
+             <i className="fas fa-check"></i>
+           </div>
+           <h1 className="font-bold text-lg tracking-tight">TeamSync</h1>
+           
+           <div className="h-6 w-px bg-gray-200 mx-2"></div>
+
+           <nav className="flex bg-gray-100 rounded-lg p-1">
+             {(['board', 'sheet', 'setup'] as const).map(tab => (
+               <button 
+                 key={tab} 
+                 onClick={() => setActiveTab(tab)}
+                 className={`px-4 py-1.5 rounded-md text-xs font-bold uppercase tracking-wider transition-all ${activeTab === tab ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+               >
+                 {tab}
+               </button>
+             ))}
+           </nav>
+        </div>
+
+        <div className="flex items-center gap-4">
+           {sheetUrl ? (
+             <div className="flex items-center gap-2 px-3 py-1.5 bg-green-50 text-green-700 rounded-full border border-green-100">
+               <div className={`w-2 h-2 rounded-full bg-green-500 ${isSyncing ? 'animate-pulse' : ''}`}></div>
+               <span className="text-[10px] font-bold uppercase tracking-wide">
+                  {isSyncing ? 'Syncing...' : `Synced ${lastSynced}`}
+               </span>
+               <button onClick={() => fetchFromSheet(sheetUrl)} className="ml-2 hover:bg-green-100 rounded-full p-1 transition-colors">
+                 <i className={`fas fa-sync-alt text-xs ${isSyncing ? 'fa-spin' : ''}`}></i>
+               </button>
              </div>
-          </div>
+           ) : (
+             <button onClick={() => setActiveTab('setup')} className="text-xs font-bold text-red-500 bg-red-50 px-3 py-1.5 rounded-full animate-pulse">
+               <i className="fas fa-exclamation-circle mr-1"></i> Connect Sheet
+             </button>
+           )}
+           <button onClick={handleAddTask} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-sm font-bold shadow-lg shadow-blue-100 transition-all flex items-center gap-2">
+             <i className="fas fa-plus"></i> New Task
+           </button>
         </div>
       </header>
 
-      {viewMode === 'board' && (
-        <div className="bg-white border-b border-gray-100 px-6 py-3 flex flex-wrap items-center gap-6 sticky top-[73px] z-30 shadow-sm">
-          <div className="flex items-center gap-3">
-             <span className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Columns</span>
-             <div className="flex bg-gray-50 p-1 rounded-lg border border-gray-200">
-               {(['Status', 'Priority', 'Assignee', 'Project'] as const).map(g => (
-                 <button key={g} onClick={() => setGroupBy(g)} className={`text-[10px] px-3 py-1 rounded-md font-bold uppercase transition-all ${groupBy === g ? 'bg-white shadow-sm text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}>{g}</button>
-               ))}
-             </div>
+      {/* Filter Bar (Only in Board/Sheet) */}
+      {activeTab !== 'setup' && (
+        <div className="bg-white px-6 py-3 border-b border-gray-100 flex items-center gap-4 overflow-x-auto shrink-0">
+          <div className="flex items-center bg-gray-100 rounded-lg px-3 py-2 w-64 shrink-0">
+            <i className="fas fa-search text-gray-400 text-xs mr-2"></i>
+            <input 
+              className="bg-transparent border-none outline-none text-xs font-medium w-full placeholder-gray-400" 
+              placeholder="Search tasks..." 
+              value={filters.search}
+              onChange={e => setFilters({...filters, search: e.target.value})}
+            />
           </div>
           <div className="h-6 w-px bg-gray-200"></div>
-          <div className="flex items-center gap-6">
-             <div className="flex items-center gap-3">
-                <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Project</label>
-                <select className="bg-white border border-gray-200 rounded-lg text-[11px] font-bold text-gray-700 px-3 py-1 focus:ring-2 focus:ring-blue-100 cursor-pointer" value={filterProject} onChange={e => setFilterProject(e.target.value)}>
-                  <option value="all">All</option>
-                  {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-             </div>
-             <div className="flex items-center gap-3">
-                <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Team</label>
-                <select className="bg-white border border-gray-200 rounded-lg text-[11px] font-bold text-gray-700 px-3 py-1 focus:ring-2 focus:ring-blue-100 cursor-pointer" value={filterAssignee} onChange={e => setFilterAssignee(e.target.value)}>
-                  <option value="all">All</option>
-                  {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-                </select>
-             </div>
-          </div>
+          
+          <select 
+            className="text-xs font-bold bg-white border border-gray-200 rounded-lg px-3 py-2 outline-none focus:border-blue-500"
+            value={filters.project} onChange={e => setFilters({...filters, project: e.target.value})}
+          >
+            <option value="all">All Projects</option>
+            {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+
+          <select 
+            className="text-xs font-bold bg-white border border-gray-200 rounded-lg px-3 py-2 outline-none focus:border-blue-500"
+            value={filters.assignee} onChange={e => setFilters({...filters, assignee: e.target.value})}
+          >
+            <option value="all">All Assignees</option>
+            {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+
+          <div className="flex-1"></div>
+          
+          {/* Group By Toggle (Board Only) */}
+          {activeTab === 'board' && (
+            <div className="flex items-center bg-gray-50 p-1 rounded-lg border border-gray-100">
+               <span className="text-[10px] font-bold text-gray-400 uppercase px-2">Group By</span>
+               {(['Status', 'Priority', 'Assignee', 'Project'] as const).map(opt => (
+                 <button 
+                   key={opt}
+                   onClick={() => setGroupBy(opt)}
+                   className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase transition-all ${groupBy === opt ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}
+                 >
+                   {opt}
+                 </button>
+               ))}
+            </div>
+          )}
         </div>
       )}
 
-      <main className="flex-1 overflow-hidden p-6">
-        {viewMode === 'sheet' ? (
-          <SheetView 
-            tasks={tasks} users={users} projects={projects} statuses={statuses} priorities={priorities} sheetUrl={sheetUrl}
-            onUpdateSheetUrl={setSheetUrl} onUpdateTask={handleUpdateTask} onAddTask={handleAddTask} onDeleteTask={handleDeleteTask}
-            onUpdateUser={u => setUsers(prev => prev.map(x => x.id === u.id ? u : x))} onAddUser={() => {}} onDeleteUser={() => {}}
-            onUpdateProject={p => setProjects(prev => prev.map(x => x.id === p.id ? p : x))} onAddProject={() => {}} onDeleteProject={() => {}}
-            onUpdateStatus={s => setStatuses(prev => prev.map(x => x.id === s.id ? s : x))} onAddStatus={() => {}} onDeleteStatus={() => {}}
-            onUpdatePriority={p => setPriorities(prev => prev.map(x => x.id === p.id ? p : x))} onAddPriority={() => {}} onDeletePriority={() => {}}
-          />
-        ) : (
-          <div className="flex h-full gap-6 overflow-x-auto pb-6">
-            {getColumns().map(column => {
-                const columnTasks = tasks.filter(t => {
-                    const matchesColumn = (groupBy === 'Status' && t.statusId === column.id) ||
-                                          (groupBy === 'Priority' && t.priorityId === column.id) ||
-                                          (groupBy === 'Assignee' && (column.id === 'unassigned' ? !t.assigneeId : t.assigneeId === column.id)) ||
-                                          (groupBy === 'Project' && (column.id === 'no-project' ? !t.projectId : t.projectId === column.id));
-                    const matchesProject = filterProject === 'all' || t.projectId === filterProject;
-                    const matchesAssignee = filterAssignee === 'all' || t.assigneeId === filterAssignee;
-                    return matchesColumn && matchesProject && matchesAssignee;
-                });
-                const isOver = draggedOverColumn === column.id;
-                return (
-                    <div key={column.id} className={`min-w-[320px] max-w-[400px] flex flex-col h-full transition-all duration-200 ${isOver ? 'scale-[1.02]' : ''}`} onDragOver={e => handleDragOver(e, column.id)} onDragLeave={() => setDraggedOverColumn(null)} onDrop={e => handleDrop(e, column.id, column.type)}>
-                        <div className="flex items-center justify-between mb-4 px-3">
-                            <h3 className={`font-black uppercase text-xs tracking-tighter transition-colors ${isOver ? 'text-blue-600' : 'text-gray-500'}`}>{column.title}</h3>
-                            <span className="text-[10px] font-black text-gray-400 bg-white border border-gray-100 px-2 py-0.5 rounded-full shadow-sm">{columnTasks.length}</span>
-                        </div>
-                        <div className={`flex-1 rounded-[2.5rem] p-4 overflow-y-auto space-y-4 border border-gray-200/50 shadow-inner sheet-scroll transition-colors ${isOver ? 'bg-blue-50/50' : 'bg-gray-100/40'}`}>
-                            {columnTasks.map(task => (
-                                <TaskCard key={task.id} task={task} priority={priorities.find(p => p.id === task.priorityId)} assignee={users.find(u => u.id === task.assigneeId)} project={projects.find(p => p.id === task.projectId)} onDragStart={handleDragStart} onClick={setSelectedTask} />
-                            ))}
-                            <button onClick={handleAddTask} className="w-full py-6 border-2 border-dashed border-gray-200 rounded-[1.8rem] text-gray-400 hover:text-blue-500 hover:border-blue-200 transition-all font-black text-[10px] uppercase tracking-[0.2em] bg-white/50">+ New Task</button>
-                        </div>
+      {/* Main Content */}
+      <main className="flex-1 overflow-hidden p-6 relative">
+         {activeTab === 'setup' && <SetupGuide />}
+         
+         {activeTab === 'sheet' && (
+           <SheetView 
+              tasks={filteredTasks} 
+              users={users} 
+              projects={projects} 
+              statuses={statuses} 
+              priorities={priorities}
+              sheetUrl={sheetUrl} 
+              onUpdateSheetUrl={setSheetUrl} 
+              onRefresh={() => fetchFromSheet(sheetUrl)}
+              onUpdateTask={handleUpdateTask}
+              onSelectTask={setSelectedTask}
+           />
+         )}
+
+         {activeTab === 'board' && (
+           <div className="flex h-full gap-6 overflow-x-auto pb-4">
+             {getColumns().map(col => {
+               const colTasks = filteredTasks.filter(t => {
+                  if (groupBy === 'Status') return t.statusId === col.id;
+                  if (groupBy === 'Priority') return t.priorityId === col.id;
+                  if (groupBy === 'Assignee') return t.assigneeId === col.id;
+                  if (groupBy === 'Project') return t.projectId === col.id;
+                  return false;
+               });
+               
+               return (
+                 <div 
+                   key={col.id + col.type}
+                   className="min-w-[300px] max-w-[300px] flex flex-col h-full rounded-2xl bg-gray-100/50 border border-transparent transition-colors"
+                   onDragOver={e => { e.preventDefault(); setDraggedOverColumn(col.id); }}
+                   onDragLeave={() => setDraggedOverColumn(null)}
+                   onDrop={e => handleDrop(e, col.id, col.type)}
+                   style={{ borderColor: draggedOverColumn === col.id ? '#3B82F6' : 'transparent' }}
+                 >
+                    <div className="p-4 flex justify-between items-center">
+                       <h3 className="font-bold text-sm text-gray-700">{col.title}</h3>
+                       <span className="bg-white px-2 py-0.5 rounded-md text-[10px] font-bold text-gray-400 shadow-sm border border-gray-100">
+                         {colTasks.length}
+                       </span>
                     </div>
-                );
-            })}
-          </div>
-        )}
+                    <div className="flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar">
+                       {colTasks.map(task => (
+                         <TaskCard 
+                           key={task.id} 
+                           task={task} 
+                           assignee={users.find(u => u.id === task.assigneeId)}
+                           project={projects.find(p => p.id === task.projectId)}
+                           priority={priorities.find(p => p.id === task.priorityId)}
+                           groupBy={groupBy}
+                           onDragStart={(e, id) => { e.dataTransfer.setData('taskId', id); }}
+                           onClick={setSelectedTask}
+                         />
+                       ))}
+                    </div>
+                 </div>
+               );
+             })}
+           </div>
+         )}
       </main>
 
-      {showGuide && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-md z-[100] flex items-center justify-center p-4">
-          <div className="bg-white w-full max-w-2xl rounded-[3rem] shadow-2xl p-12 animate-modalIn border border-gray-100 overflow-y-auto max-h-[90vh] sheet-scroll">
-            <div className="flex justify-between items-center mb-8">
-              <div className="flex items-center gap-4">
-                 <div className="w-14 h-14 bg-green-50 text-green-600 rounded-2xl flex items-center justify-center text-3xl"><i className="fas fa-satellite-dish"></i></div>
-                 <div>
-                    <h2 className="text-2xl font-black text-gray-800 uppercase tracking-tight">Sync Gateway</h2>
-                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.2em]">Connect your Google Sheet</p>
-                 </div>
-              </div>
-              <button onClick={() => setShowGuide(false)} className="text-gray-400 hover:text-gray-800 transition-colors p-3 bg-gray-50 rounded-full hover:bg-red-50 hover:text-red-500"><i className="fas fa-times text-xl"></i></button>
-            </div>
-            <div className="bg-blue-50 p-8 rounded-[2rem] border border-blue-100 space-y-4 shadow-sm mb-8">
-              <ol className="space-y-3 text-xs text-blue-900 font-medium list-decimal list-inside">
-                <li>
-                  Open your Google Sheet &gt; <strong>Extensions</strong> &gt;{" "}
-                  <strong>Apps Script</strong>.
-                </li>
-                <li>
-                  Delete any code there and <strong>Paste the Bridge Code</strong> (copy
-                  below).
-                </li>
-                <li>
-                  Click <strong>Deploy</strong> &gt; <strong>New Deployment</strong> &gt;
-                  {" "}Type: <strong>Web App</strong>.
-                </li>
-                <li>
-                  Set &quot;Who has access&quot; to <strong>Anyone</strong>.
-                </li>
-                <li>
-                  Copy the <strong>Web App URL</strong> and paste it into the{" "}
-                  <strong>Settings</strong> tab here.
-                </li>
-              </ol>
-            </div>
-            <button onClick={downloadSampleExcel} className="w-full py-4 bg-green-50 text-green-700 border border-green-200 rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-3 hover:bg-green-100 transition-all"><i className="fas fa-file-excel"></i> Download Excel Template</button>
-          </div>
-        </div>
-      )}
-
+      {/* Task Modal */}
       {selectedTask && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-           <div className="bg-white w-full max-w-4xl rounded-[2.5rem] shadow-2xl p-8 animate-modalIn border border-gray-100 max-h-[90vh] overflow-y-auto sheet-scroll">
-              <div className="flex justify-between items-start mb-6">
-                 <div className="flex-1">
-                   <label className="text-[10px] font-black uppercase text-gray-400 block mb-1">Task Title</label>
-                   <input className="text-2xl font-black focus:outline-none w-full border-b-2 border-transparent focus:border-blue-500 pb-1 transition-all" value={selectedTask.title} onChange={e => handleUpdateTask({...selectedTask, title: e.target.value})} />
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setSelectedTask(null)}>
+           <div className="bg-white w-full max-w-4xl h-[85vh] rounded-3xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200" onClick={e => e.stopPropagation()}>
+              
+              {/* Modal Header */}
+              <div className="p-6 border-b border-gray-100 flex justify-between items-start bg-gray-50/50">
+                 <div className="flex-1 mr-8">
+                    <input 
+                      className="w-full bg-transparent text-2xl font-bold text-gray-800 outline-none placeholder-gray-300"
+                      value={selectedTask.title}
+                      onChange={e => handleUpdateTask({...selectedTask, title: e.target.value})}
+                      placeholder="Task Title"
+                    />
                  </div>
-                 <button onClick={() => setSelectedTask(null)} className="ml-4 p-2 hover:bg-gray-100 rounded-full text-gray-400 transition-colors"><i className="fas fa-times"></i></button>
+                 <button onClick={() => setSelectedTask(null)} className="text-gray-400 hover:text-gray-600 transition-colors">
+                   <i className="fas fa-times text-xl"></i>
+                 </button>
               </div>
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                 <div className="lg:col-span-2 space-y-8">
+
+              <div className="flex-1 flex overflow-hidden">
+                 {/* Left: Main Details */}
+                 <div className="flex-1 p-8 overflow-y-auto space-y-8 custom-scrollbar">
+                    
+                    {/* Description */}
                     <div>
-                        <label className="text-[10px] font-black uppercase text-gray-400 block mb-2">Description</label>
-                        <textarea className="w-full p-4 bg-gray-50 rounded-2xl border-none text-sm min-h-[100px] focus:ring-2 focus:ring-blue-100" value={selectedTask.description || ''} onChange={e => handleUpdateTask({...selectedTask, description: e.target.value})} />
+                      <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3">Description</h4>
+                      <textarea 
+                        className="w-full min-h-[100px] text-sm text-gray-600 leading-relaxed bg-gray-50 p-4 rounded-xl border-none outline-none focus:ring-2 focus:ring-blue-50 transition-all resize-none"
+                        placeholder="Add details..."
+                        value={selectedTask.description}
+                        onChange={e => handleUpdateTask({...selectedTask, description: e.target.value})}
+                      />
                     </div>
+
+                    {/* Subtasks */}
                     <div>
-                        <label className="text-[10px] font-black uppercase text-gray-400 block mb-4">Activity Trail</label>
-                        <div className="space-y-4 mb-4 max-h-[200px] overflow-y-auto pr-2 sheet-scroll">
-                            {(selectedTask.comments || []).map((comment) => (
-                                <div key={comment.id} className="flex gap-3 items-start">
-                                    <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center text-[8px] font-bold text-blue-600">
-                                        {users.find(u => u.id === comment.authorId)?.name.charAt(0) || 'U'}
-                                    </div>
-                                    <div className="flex-1 bg-white p-3 rounded-2xl border border-gray-100 shadow-sm">
-                                        <p className="text-xs text-gray-700">{comment.text}</p>
-                                        <span className="text-[9px] text-gray-400 mt-1 block font-medium">{users.find(u => u.id === comment.authorId)?.name} • {new Date(comment.createdAt).toLocaleString()}</span>
-                                    </div>
-                                </div>
-                            ))}
+                      <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3">Subtasks</h4>
+                      <div className="space-y-2">
+                        {(selectedTask.subtasks || []).map((st, i) => (
+                           <div key={i} className="flex items-center gap-3 group">
+                              <div className="w-1.5 h-1.5 rounded-full bg-gray-300"></div>
+                              <input 
+                                className="flex-1 bg-transparent text-sm border-b border-transparent focus:border-gray-200 outline-none py-1"
+                                value={st}
+                                onChange={e => {
+                                   const newSub = [...(selectedTask.subtasks || [])];
+                                   newSub[i] = e.target.value;
+                                   handleUpdateTask({...selectedTask, subtasks: newSub});
+                                }}
+                              />
+                              <button onClick={() => {
+                                const newSub = selectedTask.subtasks?.filter((_, idx) => idx !== i);
+                                handleUpdateTask({...selectedTask, subtasks: newSub});
+                              }} className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-400">
+                                <i className="fas fa-times"></i>
+                              </button>
+                           </div>
+                        ))}
+                        <div className="flex items-center gap-2 mt-2">
+                           <i className="fas fa-plus text-gray-400 text-xs"></i>
+                           <input 
+                             className="bg-transparent text-sm outline-none placeholder-gray-400"
+                             placeholder="Add subtask..."
+                             onKeyDown={e => {
+                               if (e.key === 'Enter') {
+                                 const val = e.currentTarget.value;
+                                 if (val.trim()) {
+                                   handleUpdateTask({...selectedTask, subtasks: [...(selectedTask.subtasks || []), val]});
+                                   e.currentTarget.value = '';
+                                 }
+                               }
+                             }}
+                           />
                         </div>
-                        <div className="relative">
-                            <input className="w-full pl-4 pr-12 py-3 bg-gray-50 rounded-2xl border-none text-sm focus:ring-2 focus:ring-blue-100" placeholder="Add update..." value={commentInput} onChange={e => setCommentInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddComment(selectedTask.id)} />
-                            <button onClick={() => handleAddComment(selectedTask.id)} className="absolute right-3 top-2.5 p-1 text-blue-600 hover:bg-blue-100 rounded-lg"><i className="fas fa-paper-plane text-xs"></i></button>
+                      </div>
+                    </div>
+
+                    {/* Reference Links */}
+                    <div>
+                      <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3">Reference Links</h4>
+                      <div className="space-y-2">
+                        {(selectedTask.referenceLinks || []).map((link, i) => (
+                           <div key={i} className="flex items-center gap-3 group">
+                              <i className="fas fa-link text-gray-300 text-xs"></i>
+                              <input 
+                                className="flex-1 bg-transparent text-sm border-b border-transparent focus:border-gray-200 outline-none py-1 text-blue-600"
+                                value={link}
+                                onChange={e => {
+                                   const newLinks = [...(selectedTask.referenceLinks || [])];
+                                   newLinks[i] = e.target.value;
+                                   handleUpdateTask({...selectedTask, referenceLinks: newLinks});
+                                }}
+                              />
+                              <button onClick={() => {
+                                const newLinks = selectedTask.referenceLinks?.filter((_, idx) => idx !== i);
+                                handleUpdateTask({...selectedTask, referenceLinks: newLinks});
+                              }} className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-400">
+                                <i className="fas fa-times"></i>
+                              </button>
+                           </div>
+                        ))}
+                        <div className="flex items-center gap-2 mt-2">
+                           <i className="fas fa-plus text-gray-400 text-xs"></i>
+                           <input 
+                             className="bg-transparent text-sm outline-none placeholder-gray-400"
+                             placeholder="Add link..."
+                             onKeyDown={e => {
+                               if (e.key === 'Enter') {
+                                 const val = e.currentTarget.value;
+                                 if (val.trim()) {
+                                   handleUpdateTask({...selectedTask, referenceLinks: [...(selectedTask.referenceLinks || []), val]});
+                                   e.currentTarget.value = '';
+                                 }
+                               }
+                             }}
+                           />
                         </div>
+                      </div>
+                    </div>
+
+                    {/* Activity Trail (Simple Log) */}
+                    <div>
+                      <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3">Activity Log</h4>
+                      <div className="space-y-3 pl-4 border-l-2 border-gray-100">
+                         {(selectedTask.activityTrail || []).length === 0 && <p className="text-xs text-gray-300 italic">No activity yet.</p>}
+                         {[...(selectedTask.activityTrail || [])].reverse().map((log, i) => (
+                           <div key={i} className="text-xs text-gray-600">
+                             {log}
+                           </div>
+                         ))}
+                      </div>
+                      <div className="mt-4 flex gap-2">
+                        <input 
+                          className="flex-1 bg-gray-50 rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-blue-50"
+                          placeholder="Add a comment..."
+                          onKeyDown={e => {
+                             if(e.key === 'Enter') {
+                               const val = e.currentTarget.value;
+                               if(val.trim()) {
+                                 const newLog = `${new Date().toLocaleDateString()} - ${val}`; // Simple timestamp
+                                 handleUpdateTask({...selectedTask, activityTrail: [...(selectedTask.activityTrail || []), newLog]});
+                                 e.currentTarget.value = '';
+                               }
+                             }
+                          }}
+                        />
+                      </div>
                     </div>
                  </div>
-                 <div className="bg-gray-50 p-6 rounded-3xl space-y-6">
+
+                 {/* Right: Metadata */}
+                 <div className="w-80 bg-gray-50 border-l border-gray-200 p-6 space-y-6 overflow-y-auto">
                     <div>
-                        <label className="text-[10px] font-black uppercase text-gray-400 block mb-2">Status</label>
-                        <select className="w-full p-3 bg-white rounded-xl border-none shadow-sm text-sm font-bold" value={selectedTask.statusId} onChange={e => handleUpdateTask({...selectedTask, statusId: e.target.value})}>
-                        {statuses.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                        </select>
+                       <label className="text-[10px] font-black uppercase text-gray-400 tracking-wider block mb-2">Status</label>
+                       <select 
+                         className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2.5 text-sm font-semibold outline-none focus:border-blue-400"
+                         value={selectedTask.statusId}
+                         onChange={e => handleUpdateTask({...selectedTask, statusId: e.target.value})}
+                       >
+                         {statuses.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                       </select>
                     </div>
+
                     <div>
-                        <label className="text-[10px] font-black uppercase text-gray-400 block mb-2">Assignee</label>
-                        <select className="w-full p-3 bg-white rounded-xl border-none shadow-sm text-sm font-bold" value={selectedTask.assigneeId} onChange={e => handleUpdateTask({...selectedTask, assigneeId: e.target.value})}>
-                        <option value="">Unassigned</option>
-                        {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-                        </select>
+                       <label className="text-[10px] font-black uppercase text-gray-400 tracking-wider block mb-2">Priority</label>
+                       <select 
+                         className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2.5 text-sm font-semibold outline-none focus:border-blue-400"
+                         value={selectedTask.priorityId}
+                         onChange={e => handleUpdateTask({...selectedTask, priorityId: e.target.value})}
+                       >
+                         {priorities.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                       </select>
                     </div>
-                    <div className="pt-4 border-t border-gray-200">
-                      <button onClick={() => { handleDeleteTask(selectedTask.id); setSelectedTask(null); }} className="w-full py-3 bg-red-100 text-red-600 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-red-200 transition-colors"><i className="fas fa-trash-alt mr-2"></i> Delete Task</button>
+
+                    <div>
+                       <label className="text-[10px] font-black uppercase text-gray-400 tracking-wider block mb-2">Project</label>
+                       <select 
+                         className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2.5 text-sm font-semibold outline-none focus:border-blue-400"
+                         value={selectedTask.projectId}
+                         onChange={e => handleUpdateTask({...selectedTask, projectId: e.target.value})}
+                       >
+                         {projects.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                       </select>
+                    </div>
+
+                    <div>
+                       <label className="text-[10px] font-black uppercase text-gray-400 tracking-wider block mb-2">Assignee</label>
+                       <select 
+                         className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2.5 text-sm font-semibold outline-none focus:border-blue-400"
+                         value={selectedTask.assigneeId}
+                         onChange={e => handleUpdateTask({...selectedTask, assigneeId: e.target.value})}
+                       >
+                         <option value="">Unassigned</option>
+                         {users.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                       </select>
+                    </div>
+
+                    <div>
+                       <label className="text-[10px] font-black uppercase text-gray-400 tracking-wider block mb-2">Due Date</label>
+                       <input 
+                         type="date"
+                         className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2.5 text-sm font-semibold outline-none focus:border-blue-400"
+                         value={selectedTask.dueDate}
+                         onChange={e => handleUpdateTask({...selectedTask, dueDate: e.target.value})}
+                       />
+                    </div>
+
+                    <div className="pt-6 mt-6 border-t border-gray-200">
+                       <button 
+                         onClick={() => handleDeleteTask(selectedTask.id)}
+                         className="w-full py-3 rounded-xl border border-red-100 text-red-500 bg-red-50 text-xs font-bold uppercase tracking-wider hover:bg-red-100 transition-colors"
+                       >
+                         Delete Task
+                       </button>
                     </div>
                  </div>
               </div>
