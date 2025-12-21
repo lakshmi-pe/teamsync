@@ -1,5 +1,5 @@
 {
-  "name": "TeamSync Task Tracker Project",
-  "description": "A collaborative task tracker with Kanban and Sheet views, powered by Gemini for smart task creation and subtask generation. Mimics 2-way Google Sheet synchronization.",
+  "name": "TeamSync Task Tracker",
+  "description": "A collaborative task tracker with Kanban and Sheet views, featuring seamless 2-way Google Sheet synchronization.",
   "requestFramePermissions": []
 }
