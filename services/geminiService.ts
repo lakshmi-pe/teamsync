@@ -1,99 +1,92 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { Task, Status, Priority, Project, User } from "../types";
+import { Task } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-const modelId = "gemini-3-flash-preview";
-
+/**
+ * Uses Gemini to parse natural language input into structured task data.
+ */
 export const parseTaskWithGemini = async (
-  input: string, 
-  projects: Project[], 
-  users: User[], 
-  statuses: Status[], 
-  priorities: Priority[]
+  input: string
 ): Promise<Partial<Task> | null> => {
+  if (!input.trim()) return null;
+
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
   try {
-    const today = new Date().toISOString().split('T')[0];
-    const projectNames = projects.map(p => p.name).join(", ");
-    const userNames = users.map(u => u.name).join(", ");
-    const statusNames = statuses.map(s => s.name).join(", ");
-    const priorityNames = priorities.map(p => p.name).join(", ");
-
-    const prompt = `
-      Current date: ${today}.
-      Available Projects: ${projectNames}.
-      Available Users: ${userNames}.
-      Available Statuses: ${statusNames}.
-      Available Priorities: ${priorityNames}.
-      
-      Analyze the following task input and extract structured data.
-      If a project, user, status, or priority matches one of the available ones, return its name.
-      Input: "${input}"
-    `;
-
     const response = await ai.models.generateContent({
-      model: modelId,
-      contents: prompt,
+      model: 'gemini-3-flash-preview',
+      contents: `Extract task details from this input: "${input}". 
+      If a due date is mentioned, use YYYY-MM-DD format. 
+      If no due date is found, use today's date (${new Date().toISOString().split('T')[0]}).`,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            title: { type: Type.STRING },
-            description: { type: Type.STRING },
-            priorityName: { type: Type.STRING },
-            statusName: { type: Type.STRING },
-            dueDate: { type: Type.STRING, description: "YYYY-MM-DD format" },
-            suggestedProjectName: { type: Type.STRING },
-            suggestedAssigneeName: { type: Type.STRING }
+            title: {
+              type: Type.STRING,
+              description: 'Short and clear title for the task.',
+            },
+            description: {
+              type: Type.STRING,
+              description: 'Detailed explanation of the task.',
+            },
+            dueDate: {
+              type: Type.STRING,
+              description: 'Due date in YYYY-MM-DD format.',
+            }
           },
-          required: ["title"]
-        }
-      }
+          required: ["title", "dueDate"],
+          propertyOrdering: ["title", "description", "dueDate"],
+        },
+      },
     });
 
-    if (response.text) {
-      const data = JSON.parse(response.text);
-      
-      const project = projects.find(p => p.name.toLowerCase() === data.suggestedProjectName?.toLowerCase());
-      const user = users.find(u => u.name.toLowerCase().includes(data.suggestedAssigneeName?.toLowerCase() || ""));
-      const status = statuses.find(s => s.name.toLowerCase() === data.statusName?.toLowerCase()) || statuses[0];
-      const priority = priorities.find(p => p.name.toLowerCase() === data.priorityName?.toLowerCase()) || priorities[1];
-
-      return {
-        title: data.title,
-        description: data.description,
-        priorityId: priority?.id,
-        statusId: status?.id,
-        dueDate: data.dueDate || today,
-        projectId: project?.id,
-        assigneeId: user?.id,
-        subtasks: []
-      };
-    }
-    return null;
+    const jsonStr = response.text?.trim();
+    if (!jsonStr) return null;
+    
+    return JSON.parse(jsonStr);
   } catch (error) {
     console.error("Gemini parse error:", error);
-    return null;
+    // Graceful fallback to basic extraction
+    return {
+      title: input.trim(),
+      description: "",
+      dueDate: new Date().toISOString().split('T')[0]
+    };
   }
 };
 
+/**
+ * Generates subtasks based on task context using Gemini.
+ */
 export const generateSubtasks = async (taskTitle: string, taskDescription: string): Promise<string[]> => {
+  if (!taskTitle) return [];
+
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
   try {
-    const prompt = `Generate 3-5 concrete, actionable subtasks for the task: "${taskTitle}". Description: "${taskDescription}". Return a JSON array of strings.`;
     const response = await ai.models.generateContent({
-      model: modelId,
-      contents: prompt,
+      model: 'gemini-3-flash-preview',
+      contents: `Provide a logical list of 3-5 subtasks for:
+      Task: ${taskTitle}
+      Description: ${taskDescription || 'No description provided.'}`,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.ARRAY,
-          items: { type: Type.STRING }
-        }
-      }
+          items: {
+            type: Type.STRING,
+          },
+        },
+      },
     });
-    return response.text ? JSON.parse(response.text) : [];
+
+    const jsonStr = response.text?.trim();
+    if (!jsonStr) return [];
+    
+    return JSON.parse(jsonStr);
   } catch (error) {
-    console.error("Gemini subtask error:", error);
+    console.error("Gemini subtasks error:", error);
     return [];
   }
 };
