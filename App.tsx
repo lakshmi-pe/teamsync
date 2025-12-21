@@ -35,46 +35,38 @@ function App() {
   const [draggedOverColumn, setDraggedOverColumn] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
 
-  // Creation Modals State
-  const [isAddProjectModalOpen, setIsAddProjectModalOpen] = useState(false);
-  const [isAddMemberModalOpen, setIsAddMemberModalOpen] = useState(false);
-  const [newProjectName, setNewProjectName] = useState('');
-  const [newProjectColor, setNewProjectColor] = useState('#DBEAFE'); // Default blue-ish
-  const [newMemberName, setNewMemberName] = useState('');
-  const [newMemberEmail, setNewMemberEmail] = useState('');
+  // Management Modals State
+  const [manageModalType, setManageModalType] = useState<'project' | 'member' | null>(null);
+  const [newItemName, setNewItemName] = useState('');
+  const [newItemExtra, setNewItemExtra] = useState(''); // Color for project, Email for member
 
   // --- SYNC ENGINE ---
 
   const mapSheetDataToApp = useCallback((data: any) => {
-    // 1. Map Dictionaries
+    // 1. Map Explicit Lists
     const newStatuses = (data.status || []).map((r: any) => ({ id: r.Name, name: r.Name })); 
     const newPriorities = (data.priority || []).map((r: any) => ({ 
       id: r.Name, 
       name: r.Name, 
       color: r.ColorClass || 'bg-gray-100 text-gray-800' 
     }));
-    const newProjects = (data.projects || []).map((r: any) => ({ 
+    let newProjects = (data.projects || []).map((r: any) => ({ 
       id: r.Name, 
       name: r.Name, 
       color: r.ColorHex ? `bg-[${r.ColorHex}]` : 'bg-gray-100' 
     }));
-    const newUsers = (data.members || []).map((r: any) => ({ 
+    let newUsers = (data.members || []).map((r: any) => ({ 
       id: r.Name, 
       name: r.Name, 
       email: r.Email,
       avatar: r.AvatarUrl 
     }));
 
-    // Update Domain Lists
-    if(newStatuses.length) setStatuses(newStatuses);
-    if(newPriorities.length) setPriorities(newPriorities);
-    if(newProjects.length) setProjects(newProjects);
-    if(newUsers.length) setUsers(newUsers);
-
     // 2. Map Tasks
+    const mappedTasks: Task[] = [];
     if (data.tasks && Array.isArray(data.tasks)) {
-      const mappedTasks: Task[] = data.tasks.map((t: any) => {
-        return {
+      data.tasks.forEach((t: any) => {
+         mappedTasks.push({
           id: t["ID"] ? String(t["ID"]) : `t${Date.now()}-${Math.random()}`,
           title: t["Title"] || 'Untitled',
           description: t["Description"] || '',
@@ -87,10 +79,45 @@ function App() {
           activityTrail: t["ActivityTrail"] ? String(t["ActivityTrail"]).split('\n').filter(Boolean) : [],
           subtasks: t["Subtasks"] ? String(t["Subtasks"]).split('\n').filter(Boolean) : [],
           updatedAt: new Date().toISOString()
-        };
+        });
       });
       setTasks(mappedTasks);
     }
+
+    // 3. Auto-Discovery: Add missing Projects/Assignees found in Tasks but missing in Lists
+    // This ensures names typed directly into the sheet (Assignee column) are picked up.
+    const projectMap = new Map(newProjects.map((p: Project) => [p.name, p]));
+    const userMap = new Map(newUsers.map((u: User) => [u.name, u]));
+    let listsUpdated = false;
+
+    mappedTasks.forEach(t => {
+       // Check Project
+       if (t.projectId && !projectMap.has(t.projectId)) {
+          const autoProject = { id: t.projectId, name: t.projectId, color: 'bg-gray-100' };
+          newProjects.push(autoProject);
+          projectMap.set(t.projectId, autoProject);
+          listsUpdated = true;
+       }
+       // Check Assignee
+       if (t.assigneeId && !userMap.has(t.assigneeId)) {
+          const autoUser = { 
+            id: t.assigneeId, 
+            name: t.assigneeId, 
+            email: '', 
+            avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(t.assigneeId)}&background=random` 
+          };
+          newUsers.push(autoUser);
+          userMap.set(t.assigneeId, autoUser);
+          listsUpdated = true;
+       }
+    });
+
+    // Update Domain Lists
+    if(newStatuses.length) setStatuses(newStatuses);
+    if(newPriorities.length) setPriorities(newPriorities);
+    setProjects(newProjects);
+    setUsers(newUsers);
+
   }, []);
 
   const fetchFromSheet = useCallback(async (url: string) => {
@@ -115,13 +142,13 @@ function App() {
   }, [sheetUrl]);
 
   // Generic Sync function for any tab
-  const pushReferenceDataToSheet = async (sheetName: string, idCol: string, data: any) => {
+  const syncReferenceData = async (sheetName: string, action: 'upsert' | 'delete', idCol: string, data: any) => {
     if (!sheetUrl) return;
     setIsSyncing(true);
     try {
       const payload = {
         targetSheet: sheetName,
-        action: "upsert",
+        action: action,
         idColumn: idCol,
         data: data
       };
@@ -133,14 +160,14 @@ function App() {
       });
       setLastSynced(new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}));
     } catch (e) {
-      console.error("Push Error:", e);
+      console.error("Sync Error:", e);
     } finally {
       setIsSyncing(false);
     }
   };
 
   const pushTaskToSheet = async (task: Task) => {
-    await pushReferenceDataToSheet("Tasks", "ID", {
+    await syncReferenceData("Tasks", "upsert", "ID", {
           "ID": task.id,
           "Title": task.title,
           "Description": task.description || '',
@@ -164,53 +191,51 @@ function App() {
   const handleDeleteTask = (id: string) => {
     setTasks(prev => prev.filter(t => t.id !== id));
     setSelectedTask(null);
+    syncReferenceData("Tasks", "delete", "ID", { id: id });
   };
 
-  // --- ENTITY CREATION ---
+  // --- ENTITY MANAGEMENT ---
 
-  const handleCreateProject = async () => {
-    if (!newProjectName.trim()) return;
-    const newProject: Project = {
-      id: newProjectName, // Using Name as ID for sheet sync simplicity
-      name: newProjectName,
-      color: `bg-[${newProjectColor}]` // storing class-like string or just hex? Sheet expects hex usually but apps script handles strings.
-    };
-    
+  const handleAddProject = async () => {
+    if (!newItemName.trim()) return;
+    const color = newItemExtra || '#DBEAFE';
+    const newProject: Project = { id: newItemName, name: newItemName, color: `bg-[${color}]` };
     setProjects(prev => [...prev, newProject]);
-    
-    // Sync to "Projects" tab
-    // Header: Name, ColorHex
-    await pushReferenceDataToSheet("Projects", "Name", {
-      "Name": newProject.name,
-      "ColorHex": newProjectColor
-    });
-
-    setNewProjectName('');
-    setIsAddProjectModalOpen(false);
+    await syncReferenceData("Projects", "upsert", "Name", { "Name": newProject.name, "ColorHex": color });
+    setNewItemName('');
   };
 
-  const handleCreateMember = async () => {
-    if (!newMemberName.trim()) return;
+  const handleDeleteProject = async (id: string) => {
+    if (!window.confirm(`Delete project "${id}"? Tasks will be unassigned.`)) return;
+    setProjects(prev => prev.filter(p => p.id !== id));
+    // Update tasks that were in this project
+    const affectedTasks = tasks.filter(t => t.projectId === id);
+    affectedTasks.forEach(t => handleUpdateTask({ ...t, projectId: '' }));
+    await syncReferenceData("Projects", "delete", "Name", { id: id });
+  };
+
+  const handleAddMember = async () => {
+    if (!newItemName.trim()) return;
     const newMember: User = {
-      id: newMemberName, // Using Name as ID
-      name: newMemberName,
-      email: newMemberEmail,
-      avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(newMemberName)}&background=random`
+      id: newItemName,
+      name: newItemName,
+      email: newItemExtra,
+      avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(newItemName)}&background=random`
     };
-
     setUsers(prev => [...prev, newMember]);
-
-    // Sync to "Team Members" tab
-    // Header: Name, Email, AvatarUrl
-    await pushReferenceDataToSheet("Team Members", "Name", {
-      "Name": newMember.name,
-      "Email": newMember.email,
-      "AvatarUrl": newMember.avatar
+    await syncReferenceData("Team Members", "upsert", "Name", {
+      "Name": newMember.name, "Email": newMember.email, "AvatarUrl": newMember.avatar
     });
+    setNewItemName('');
+    setNewItemExtra('');
+  };
 
-    setNewMemberName('');
-    setNewMemberEmail('');
-    setIsAddMemberModalOpen(false);
+  const handleDeleteMember = async (id: string) => {
+    if (!window.confirm(`Delete member "${id}"? Tasks will be unassigned.`)) return;
+    setUsers(prev => prev.filter(u => u.id !== id));
+    const affectedTasks = tasks.filter(t => t.assigneeId === id);
+    affectedTasks.forEach(t => handleUpdateTask({ ...t, assigneeId: '' }));
+    await syncReferenceData("Team Members", "delete", "Name", { id: id });
   };
 
   // --- VIEW LOGIC ---
@@ -353,18 +378,18 @@ function App() {
           {/* Create Button Contextual to GroupBy */}
           {activeTab === 'board' && groupBy === 'Project' && (
              <button 
-               onClick={() => setIsAddProjectModalOpen(true)}
+               onClick={() => { setManageModalType('project'); setNewItemName(''); setNewItemExtra(''); }}
                className="mr-2 text-xs font-bold text-blue-600 bg-blue-50 px-3 py-1.5 rounded-lg hover:bg-blue-100 transition-colors flex items-center gap-1"
              >
-               <i className="fas fa-plus"></i> New Project
+               <i className="fas fa-cog"></i> Manage Projects
              </button>
           )}
           {activeTab === 'board' && groupBy === 'Assignee' && (
              <button 
-               onClick={() => setIsAddMemberModalOpen(true)}
+               onClick={() => { setManageModalType('member'); setNewItemName(''); setNewItemExtra(''); }}
                className="mr-2 text-xs font-bold text-green-600 bg-green-50 px-3 py-1.5 rounded-lg hover:bg-green-100 transition-colors flex items-center gap-1"
              >
-               <i className="fas fa-plus"></i> New Member
+               <i className="fas fa-users-cog"></i> Manage Members
              </button>
           )}
 
@@ -402,8 +427,8 @@ function App() {
               onRefresh={() => fetchFromSheet(sheetUrl)}
               onUpdateTask={handleUpdateTask}
               onSelectTask={setSelectedTask}
-              onAddProject={() => setIsAddProjectModalOpen(true)}
-              onAddMember={() => setIsAddMemberModalOpen(true)}
+              onManageProjects={() => { setManageModalType('project'); setNewItemName(''); setNewItemExtra(''); }}
+              onManageMembers={() => { setManageModalType('member'); setNewItemName(''); setNewItemExtra(''); }}
            />
          )}
 
@@ -427,8 +452,23 @@ function App() {
                    onDrop={e => handleDrop(e, col.id, col.type)}
                    style={{ borderColor: draggedOverColumn === col.id ? '#3B82F6' : 'transparent' }}
                  >
-                    <div className="p-4 flex justify-between items-center">
-                       <h3 className="font-bold text-sm text-gray-700">{col.title}</h3>
+                    <div className="p-4 flex justify-between items-center group/header">
+                       <h3 className="font-bold text-sm text-gray-700 flex items-center gap-2">
+                         {col.title}
+                         {/* Delete button in column header if applicable */}
+                         {col.id && (col.type === 'project' || col.type === 'assignee') && (
+                           <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              col.type === 'project' ? handleDeleteProject(col.id) : handleDeleteMember(col.id);
+                            }}
+                            className="opacity-0 group-hover/header:opacity-100 text-gray-300 hover:text-red-500 transition-all text-xs"
+                            title="Delete this column (and updating tasks)"
+                           >
+                             <i className="fas fa-trash"></i>
+                           </button>
+                         )}
+                       </h3>
                        <span className="bg-white px-2 py-0.5 rounded-md text-[10px] font-bold text-gray-400 shadow-sm border border-gray-100">
                          {colTasks.length}
                        </span>
@@ -631,8 +671,8 @@ function App() {
                     <div>
                        <div className="flex justify-between items-center mb-2">
                          <label className="text-[10px] font-black uppercase text-gray-400 tracking-wider block">Project</label>
-                         <button onClick={() => setIsAddProjectModalOpen(true)} className="text-[10px] font-bold text-blue-500 hover:text-blue-700">
-                           + Add New
+                         <button onClick={() => { setManageModalType('project'); setNewItemName(''); setNewItemExtra(''); }} className="text-[10px] font-bold text-blue-500 hover:text-blue-700">
+                           Manage
                          </button>
                        </div>
                        <select 
@@ -647,8 +687,8 @@ function App() {
                     <div>
                        <div className="flex justify-between items-center mb-2">
                          <label className="text-[10px] font-black uppercase text-gray-400 tracking-wider block">Assignee</label>
-                         <button onClick={() => setIsAddMemberModalOpen(true)} className="text-[10px] font-bold text-blue-500 hover:text-blue-700">
-                           + Add New
+                         <button onClick={() => { setManageModalType('member'); setNewItemName(''); setNewItemExtra(''); }} className="text-[10px] font-bold text-blue-500 hover:text-blue-700">
+                           Manage
                          </button>
                        </div>
                        <select 
@@ -685,54 +725,72 @@ function App() {
         </div>
       )}
 
-      {/* Add Project Modal */}
-      {isAddProjectModalOpen && (
+      {/* Unified Manage Modal */}
+      {manageModalType && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl space-y-4">
-             <h3 className="font-bold text-lg text-gray-800">Add New Project</h3>
-             <input 
-               className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500"
-               placeholder="Project Name"
-               value={newProjectName}
-               onChange={e => setNewProjectName(e.target.value)}
-             />
-             <div className="flex items-center gap-2">
-               <label className="text-sm text-gray-500">Color:</label>
-               <input 
-                 type="color" 
-                 value={newProjectColor} 
-                 onChange={e => setNewProjectColor(e.target.value)}
-                 className="h-8 w-8 rounded cursor-pointer border-none"
-               />
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-6 max-h-[80vh] flex flex-col">
+             <div className="flex justify-between items-center">
+                <h3 className="font-bold text-lg text-gray-800">
+                  Manage {manageModalType === 'project' ? 'Projects' : 'Members'}
+                </h3>
+                <button onClick={() => setManageModalType(null)} className="text-gray-400 hover:text-gray-600">
+                  <i className="fas fa-times"></i>
+                </button>
              </div>
-             <div className="flex justify-end gap-2 pt-2">
-                <button onClick={() => setIsAddProjectModalOpen(false)} className="px-4 py-2 text-sm text-gray-500 hover:bg-gray-100 rounded-lg">Cancel</button>
-                <button onClick={handleCreateProject} className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700">Create</button>
-             </div>
-          </div>
-        </div>
-      )}
 
-      {/* Add Member Modal */}
-      {isAddMemberModalOpen && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl space-y-4">
-             <h3 className="font-bold text-lg text-gray-800">Add New Member</h3>
-             <input 
-               className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500"
-               placeholder="Full Name"
-               value={newMemberName}
-               onChange={e => setNewMemberName(e.target.value)}
-             />
-             <input 
-               className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500"
-               placeholder="Email Address"
-               value={newMemberEmail}
-               onChange={e => setNewMemberEmail(e.target.value)}
-             />
-             <div className="flex justify-end gap-2 pt-2">
-                <button onClick={() => setIsAddMemberModalOpen(false)} className="px-4 py-2 text-sm text-gray-500 hover:bg-gray-100 rounded-lg">Cancel</button>
-                <button onClick={handleCreateMember} className="px-4 py-2 text-sm bg-green-600 text-white rounded-lg font-bold hover:bg-green-700">Add Member</button>
+             {/* List */}
+             <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2 pr-2">
+                {(manageModalType === 'project' ? projects : users).map((item) => (
+                   <div key={item.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg group">
+                      <div className="flex items-center gap-3">
+                         {manageModalType === 'member' && (
+                           <img src={(item as User).avatar} className="w-8 h-8 rounded-full bg-gray-200" alt=""/>
+                         )}
+                         <span className="font-medium text-sm text-gray-700">{item.name}</span>
+                      </div>
+                      <button 
+                        onClick={() => manageModalType === 'project' ? handleDeleteProject(item.id) : handleDeleteMember(item.id)}
+                        className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all p-2"
+                      >
+                        <i className="fas fa-trash"></i>
+                      </button>
+                   </div>
+                ))}
+             </div>
+
+             {/* Add New Section */}
+             <div className="pt-4 border-t border-gray-100 space-y-3">
+                 <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wide">Add New</h4>
+                 <input 
+                   className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500"
+                   placeholder={manageModalType === 'project' ? "Project Name" : "Member Name"}
+                   value={newItemName}
+                   onChange={e => setNewItemName(e.target.value)}
+                 />
+                 {manageModalType === 'member' ? (
+                   <input 
+                     className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500"
+                     placeholder="Email Address"
+                     value={newItemExtra}
+                     onChange={e => setNewItemExtra(e.target.value)}
+                   />
+                 ) : (
+                   <div className="flex items-center gap-2">
+                      <span className="text-sm text-gray-500">Color:</span>
+                      <input 
+                        type="color" 
+                        value={newItemExtra || '#DBEAFE'} 
+                        onChange={e => setNewItemExtra(e.target.value)}
+                        className="h-8 w-8 rounded cursor-pointer border-none"
+                      />
+                   </div>
+                 )}
+                 <button 
+                   onClick={manageModalType === 'project' ? handleAddProject : handleAddMember}
+                   className="w-full py-2.5 bg-gray-900 text-white rounded-lg text-sm font-bold hover:bg-black transition-colors"
+                 >
+                   Add {manageModalType === 'project' ? 'Project' : 'Member'}
+                 </button>
              </div>
           </div>
         </div>
