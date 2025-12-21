@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { Task, User, Project, Status, Priority } from '../types';
 
@@ -57,11 +58,15 @@ const SheetView: React.FC<SheetViewProps> = ({
     const task = tasks.find(t => t.id === taskId);
     if (task) {
       const lines = newText.split('\n').filter(line => line.trim() !== '');
-      const newSubtasks = lines.map((line, index) => ({
-        id: task.subtasks[index]?.id || `st-${Date.now()}-${Math.random()}`,
-        title: line.trim(),
-        completed: task.subtasks[index]?.completed || false 
-      }));
+      const newSubtasks = lines.map((line, index) => {
+        const completed = line.startsWith('[x]');
+        const title = line.replace(/^\[[ x]\]\s*/, '').trim();
+        return {
+          id: task.subtasks[index]?.id || `st-${Date.now()}-${Math.random()}`,
+          title,
+          completed 
+        };
+      });
       onUpdateTask({ ...task, subtasks: newSubtasks });
     }
   };
@@ -84,7 +89,6 @@ const SheetView: React.FC<SheetViewProps> = ({
 
   return (
     <div className="bg-white rounded-[2rem] shadow-2xl border border-gray-200 overflow-hidden flex flex-col h-full animate-modalIn">
-      {/* Improved Tab Navigation */}
       <div className="flex items-center border-b border-gray-100 bg-gray-50/70 p-1.5 overflow-x-auto gap-1">
          {tabs.map(tab => (
            <button
@@ -108,7 +112,7 @@ const SheetView: React.FC<SheetViewProps> = ({
                   <th className="px-4 py-3 border-b border-r w-8">#</th>
                   <th className="px-4 py-3 border-b border-r min-w-[200px]">Task Name</th>
                   <th className="px-4 py-3 border-b border-r min-w-[250px]">Description</th>
-                  <th className="px-4 py-3 border-b border-r min-w-[180px]">Subtasks</th>
+                  <th className="px-4 py-3 border-b border-r min-w-[180px]">Subtasks ([ ] or [x])</th>
                   <th className="px-4 py-3 border-b border-r min-w-[180px]">Ref Links</th>
                   <th className="px-4 py-3 border-b border-r w-32">Status</th>
                   <th className="px-4 py-3 border-b border-r w-32">Priority</th>
@@ -124,7 +128,7 @@ const SheetView: React.FC<SheetViewProps> = ({
                     <td className="px-4 py-3 border-r text-gray-400 font-mono">{index + 1}</td>
                     <td className="p-0 border-r"><textarea className="w-full px-4 py-3 bg-transparent h-full min-h-[60px] resize-none focus:bg-white focus:ring-0 focus:outline-none font-semibold text-gray-800" value={task.title} onChange={e => handleChange(task.id, 'title', e.target.value)} /></td>
                     <td className="p-0 border-r"><textarea className="w-full px-4 py-3 bg-transparent h-full min-h-[60px] resize-none focus:bg-white focus:ring-0 focus:outline-none text-gray-500" value={task.description || ''} onChange={e => handleChange(task.id, 'description', e.target.value)} /></td>
-                    <td className="p-0 border-r"><textarea className="w-full px-4 py-3 bg-transparent h-full min-h-[60px] resize-none focus:bg-white focus:ring-0 focus:outline-none font-mono text-[10px] text-gray-400" value={task.subtasks.map(s => s.title).join('\n')} onChange={e => handleSubtaskTextChange(task.id, e.target.value)} /></td>
+                    <td className="p-0 border-r"><textarea className="w-full px-4 py-3 bg-transparent h-full min-h-[60px] resize-none focus:bg-white focus:ring-0 focus:outline-none font-mono text-[10px] text-gray-400" value={(task.subtasks || []).map(s => `${s.completed ? '[x]' : '[ ]'} ${s.title}`).join('\n')} onChange={e => handleSubtaskTextChange(task.id, e.target.value)} /></td>
                     <td className="p-0 border-r"><textarea className="w-full px-4 py-3 bg-transparent h-full min-h-[60px] resize-none focus:bg-white focus:ring-0 focus:outline-none font-mono text-[10px] text-blue-500" value={(task.referenceLinks || []).join('\n')} onChange={e => handleLinksTextChange(task.id, e.target.value)} /></td>
                     <td className="p-0 border-r">
                       <select value={task.statusId} onChange={e => handleChange(task.id, 'statusId', e.target.value)} className="w-full h-full p-3 bg-transparent cursor-pointer font-bold text-gray-600 focus:outline-none">
@@ -281,26 +285,6 @@ const SheetView: React.FC<SheetViewProps> = ({
                       Save & Connect
                     </button>
                   </div>
-                </div>
-              </div>
-
-              <div className="bg-white border border-gray-100 p-8 rounded-[2.5rem] shadow-sm flex gap-6 items-start">
-                <div className="w-12 h-12 bg-orange-50 text-orange-500 rounded-2xl flex items-center justify-center flex-shrink-0 text-xl"><i className="fas fa-lock"></i></div>
-                <div>
-                    <h4 className="font-black text-gray-800 text-sm uppercase tracking-tight mb-2">End-to-End Privacy</h4>
-                    <p className="text-xs text-gray-400 leading-relaxed">
-                        TeamSync connects directly to your Google Sheet using your browser's local context. We never store, proxy, or read your data on our own infrastructure. You own the bridge, you own the sheet.
-                    </p>
-                </div>
-              </div>
-
-              <div className="bg-green-50/50 border border-green-100 p-8 rounded-[2.5rem] shadow-sm flex gap-6 items-start">
-                <div className="w-12 h-12 bg-green-100 text-green-600 rounded-2xl flex items-center justify-center flex-shrink-0 text-xl"><i className="fas fa-sync-alt"></i></div>
-                <div>
-                    <h4 className="font-black text-green-900 text-sm uppercase tracking-tight mb-2">Automatic Refresh</h4>
-                    <p className="text-xs text-green-700 leading-relaxed">
-                        Once connected, changes you make in the **Sheet View** are pushed instantly. Changes made directly in Google Sheets are pulled whenever you refresh or manually trigger a sync in the Board View.
-                    </p>
                 </div>
               </div>
             </div>
