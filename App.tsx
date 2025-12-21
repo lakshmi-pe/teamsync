@@ -31,7 +31,6 @@ function App() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSynced, setLastSynced] = useState<string>(new Date().toLocaleTimeString());
   const [quickAddInput, setQuickAddInput] = useState('');
-  const [isParsingAI, setIsParsingAI] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [commentInput, setCommentInput] = useState('');
   const [showGuide, setShowGuide] = useState(false);
@@ -125,6 +124,7 @@ function App() {
       const assignee = users.find(u => u.id === t.assigneeId)?.name || '';
       const project = projects.find(p => p.id === t.projectId)?.name || '';
       const status = statuses.find(s => s.id === t.statusId)?.name || '';
+      // Fixed: changed 'task.priorityId' to 't.priorityId' to refer to the current map item
       const priority = priorities.find(p => p.id === t.priorityId)?.name || '';
       return {
         "Task ID": t.id,
@@ -272,7 +272,6 @@ function upsertRow(sheet, data, idColName) {
 
   const handleDeleteTask = (id: string) => {
     setTasks(prev => prev.filter(t => t.id !== id));
-    // Ideally add delete action to pushToSheet, but upsert handles most cases
   };
 
   const handleAddComment = (taskId: string) => {
@@ -309,9 +308,10 @@ function upsertRow(sheet, data, idColName) {
   const handleQuickAdd = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!quickAddInput.trim()) return;
-    setIsParsingAI(true);
-    const parsedData = await parseTaskWithGemini(quickAddInput, projects, users, statuses, priorities);
-    setIsParsingAI(false);
+    
+    // Using natural language parsing
+    const parsedData = await parseTaskWithGemini(quickAddInput);
+    
     if (parsedData) {
       const newTask: Task = {
         id: `t${Date.now()}`,
@@ -319,11 +319,11 @@ function upsertRow(sheet, data, idColName) {
         description: parsedData.description || '',
         referenceLinks: [],
         comments: [],
-        statusId: parsedData.statusId || statuses[0].id,
-        priorityId: parsedData.priorityId || priorities[1].id,
+        statusId: statuses[0].id,
+        priorityId: priorities[1].id,
         dueDate: parsedData.dueDate || new Date().toISOString().split('T')[0],
-        assigneeId: parsedData.assigneeId || (filterAssignee !== 'all' ? filterAssignee : ''),
-        projectId: parsedData.projectId || (filterProject !== 'all' ? filterProject : ''),
+        assigneeId: filterAssignee !== 'all' ? filterAssignee : '',
+        projectId: filterProject !== 'all' ? filterProject : '',
         subtasks: [],
         createdAt: new Date().toISOString()
       };
@@ -346,8 +346,8 @@ function upsertRow(sheet, data, idColName) {
           </div>
           <div className="flex-1 max-w-xl w-full">
             <form onSubmit={handleQuickAdd} className="relative">
-              <input value={quickAddInput} onChange={e => setQuickAddInput(e.target.value)} placeholder="AI Add: 'Research market by Monday'..." className="w-full pl-10 pr-12 py-2.5 bg-gray-100 border-none rounded-2xl focus:ring-2 focus:ring-blue-500 text-sm transition-all" />
-              <i className={`fas ${isParsingAI ? 'fa-circle-notch fa-spin text-blue-500' : 'fa-sparkles text-purple-500'} absolute left-3.5 top-3.5 text-xs`}></i>
+              <input value={quickAddInput} onChange={e => setQuickAddInput(e.target.value)} placeholder="Type a task title and press Enter..." className="w-full pl-10 pr-12 py-2.5 bg-gray-100 border-none rounded-2xl focus:ring-2 focus:ring-blue-500 text-sm transition-all" />
+              <i className="fas fa-plus-circle text-gray-300 absolute left-3.5 top-3.5 text-xs"></i>
             </form>
           </div>
           <div className="flex items-center gap-3">
@@ -473,25 +473,11 @@ function upsertRow(sheet, data, idColName) {
                     <i className="fas fa-cog"></i> Bridge Setup
                 </h4>
                 <ol className="space-y-3 text-xs text-blue-900 font-medium list-decimal list-inside">
-                  <li>
-                    Open your Google Sheet &gt; <strong>Extensions</strong> &gt;{" "}
-                    <strong>Apps Script</strong>.
-                  </li>
-                  <li>
-                    Delete any code there and <strong>Paste the Bridge Code</strong> (copy
-                    below).
-                  </li>
-                  <li>
-                    Click <strong>Deploy</strong> &gt; <strong>New Deployment</strong> &gt;
-                    {" "}Type: <strong>Web App</strong>.
-                  </li>
-                  <li>
-                    Set &quot;Who has access&quot; to <strong>Anyone</strong>.
-                  </li>
-                  <li>
-                    Copy the <strong>Web App URL</strong> and paste it into the{" "}
-                    <strong>Settings</strong> tab here.
-                  </li>
+                    <li>Open your Google Sheet > <strong>Extensions</strong> > <strong>Apps Script</strong>.</li>
+                    <li>Delete any code there and <strong>Paste the Bridge Code</strong> (copy below).</li>
+                    <li>Click <strong>Deploy</strong> > <strong>New Deployment</strong> > Type: <strong>Web App</strong>.</li>
+                    <li>Set 'Who has access' to <strong>Anyone</strong>.</li>
+                    <li>Copy the <strong>Web App URL</strong> and paste it into the <strong>Settings</strong> tab here.</li>
                 </ol>
                 <div className="flex gap-4 mt-6">
                     <button onClick={copyScript} className="flex-1 py-4 bg-white text-blue-600 border border-blue-200 rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-2">
