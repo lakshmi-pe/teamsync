@@ -13,6 +13,8 @@ interface SheetViewProps {
   onRefresh: () => void;
   onUpdateTask: (task: Task) => void;
   onSelectTask: (task: Task) => void;
+  onAddProject: () => void;
+  onAddMember: () => void;
 }
 
 const SheetView: React.FC<SheetViewProps> = ({ 
@@ -25,7 +27,9 @@ const SheetView: React.FC<SheetViewProps> = ({
   onUpdateSheetUrl, 
   onRefresh,
   onUpdateTask,
-  onSelectTask
+  onSelectTask,
+  onAddProject,
+  onAddMember
 }) => {
 
   const handleInputChange = (task: Task, field: keyof Task, value: any) => {
@@ -35,11 +39,20 @@ const SheetView: React.FC<SheetViewProps> = ({
   return (
     <div className="h-full flex flex-col bg-white rounded-3xl border border-gray-200 shadow-sm overflow-hidden">
       {/* Sync Control Bar */}
-      <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+      <div className="p-4 border-b border-gray-100 flex flex-wrap gap-4 justify-between items-center bg-gray-50">
          <div className="flex items-center gap-4">
             <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
               <i className="fas fa-table text-blue-500"></i> Spreadsheet View
             </h2>
+            <div className="h-4 w-px bg-gray-300"></div>
+            <div className="flex gap-2">
+               <button onClick={onAddProject} className="text-xs font-bold text-gray-600 bg-white border border-gray-200 px-3 py-1.5 rounded-lg hover:bg-gray-100 transition-colors">
+                 <i className="fas fa-plus mr-1 text-blue-500"></i> Project
+               </button>
+               <button onClick={onAddMember} className="text-xs font-bold text-gray-600 bg-white border border-gray-200 px-3 py-1.5 rounded-lg hover:bg-gray-100 transition-colors">
+                 <i className="fas fa-plus mr-1 text-green-500"></i> Member
+               </button>
+            </div>
          </div>
          <div className="flex gap-2">
             <input 

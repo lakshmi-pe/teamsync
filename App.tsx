@@ -35,11 +35,19 @@ function App() {
   const [draggedOverColumn, setDraggedOverColumn] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
 
+  // Creation Modals State
+  const [isAddProjectModalOpen, setIsAddProjectModalOpen] = useState(false);
+  const [isAddMemberModalOpen, setIsAddMemberModalOpen] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('');
+  const [newProjectColor, setNewProjectColor] = useState('#DBEAFE'); // Default blue-ish
+  const [newMemberName, setNewMemberName] = useState('');
+  const [newMemberEmail, setNewMemberEmail] = useState('');
+
   // --- SYNC ENGINE ---
 
   const mapSheetDataToApp = useCallback((data: any) => {
     // 1. Map Dictionaries
-    const newStatuses = (data.status || []).map((r: any, i: number) => ({ id: r.Name, name: r.Name })); // Name is ID for simplicity in sync
+    const newStatuses = (data.status || []).map((r: any) => ({ id: r.Name, name: r.Name })); 
     const newPriorities = (data.priority || []).map((r: any) => ({ 
       id: r.Name, 
       name: r.Name, 
@@ -106,33 +114,20 @@ function App() {
     localStorage.setItem('teamSync_sheetUrl', sheetUrl);
   }, [sheetUrl]);
 
-  const pushTaskToSheet = async (task: Task) => {
+  // Generic Sync function for any tab
+  const pushReferenceDataToSheet = async (sheetName: string, idCol: string, data: any) => {
     if (!sheetUrl) return;
     setIsSyncing(true);
     try {
-      // We send friendly names because that's what the sheet expects for dropdowns
       const payload = {
-        targetSheet: "Tasks",
+        targetSheet: sheetName,
         action: "upsert",
-        idColumn: "ID",
-        data: {
-          "ID": task.id,
-          "Title": task.title,
-          "Description": task.description || '',
-          "Status": task.statusId, // Maps to Name
-          "Priority": task.priorityId, // Maps to Name
-          "DueDate": task.dueDate,
-          "Assignee": task.assigneeId, // Maps to Name
-          "Project": task.projectId, // Maps to Name
-          "RefLinks": (task.referenceLinks || []).join('\n'),
-          "ActivityTrail": (task.activityTrail || []).join('\n'),
-          "Subtasks": (task.subtasks || []).join('\n')
-        }
+        idColumn: idCol,
+        data: data
       };
-
       await fetch(sheetUrl, {
         method: 'POST',
-        mode: 'no-cors', // Apps Script limit
+        mode: 'no-cors', 
         body: JSON.stringify(payload),
         headers: { 'Content-Type': 'text/plain' }
       });
@@ -144,6 +139,22 @@ function App() {
     }
   };
 
+  const pushTaskToSheet = async (task: Task) => {
+    await pushReferenceDataToSheet("Tasks", "ID", {
+          "ID": task.id,
+          "Title": task.title,
+          "Description": task.description || '',
+          "Status": task.statusId, 
+          "Priority": task.priorityId, 
+          "DueDate": task.dueDate,
+          "Assignee": task.assigneeId,
+          "Project": task.projectId,
+          "RefLinks": (task.referenceLinks || []).join('\n'),
+          "ActivityTrail": (task.activityTrail || []).join('\n'),
+          "Subtasks": (task.subtasks || []).join('\n')
+    });
+  };
+
   const handleUpdateTask = (updatedTask: Task) => {
     setTasks(prev => prev.map(t => t.id === updatedTask.id ? updatedTask : t));
     if (selectedTask?.id === updatedTask.id) setSelectedTask(updatedTask);
@@ -153,8 +164,53 @@ function App() {
   const handleDeleteTask = (id: string) => {
     setTasks(prev => prev.filter(t => t.id !== id));
     setSelectedTask(null);
-    // In v1, we won't implement robust delete sync in background to avoid complexity, 
-    // but the SheetView hook supports it if we wanted to call it.
+  };
+
+  // --- ENTITY CREATION ---
+
+  const handleCreateProject = async () => {
+    if (!newProjectName.trim()) return;
+    const newProject: Project = {
+      id: newProjectName, // Using Name as ID for sheet sync simplicity
+      name: newProjectName,
+      color: `bg-[${newProjectColor}]` // storing class-like string or just hex? Sheet expects hex usually but apps script handles strings.
+    };
+    
+    setProjects(prev => [...prev, newProject]);
+    
+    // Sync to "Projects" tab
+    // Header: Name, ColorHex
+    await pushReferenceDataToSheet("Projects", "Name", {
+      "Name": newProject.name,
+      "ColorHex": newProjectColor
+    });
+
+    setNewProjectName('');
+    setIsAddProjectModalOpen(false);
+  };
+
+  const handleCreateMember = async () => {
+    if (!newMemberName.trim()) return;
+    const newMember: User = {
+      id: newMemberName, // Using Name as ID
+      name: newMemberName,
+      email: newMemberEmail,
+      avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(newMemberName)}&background=random`
+    };
+
+    setUsers(prev => [...prev, newMember]);
+
+    // Sync to "Team Members" tab
+    // Header: Name, Email, AvatarUrl
+    await pushReferenceDataToSheet("Team Members", "Name", {
+      "Name": newMember.name,
+      "Email": newMember.email,
+      "AvatarUrl": newMember.avatar
+    });
+
+    setNewMemberName('');
+    setNewMemberEmail('');
+    setIsAddMemberModalOpen(false);
   };
 
   // --- VIEW LOGIC ---
@@ -193,7 +249,6 @@ function App() {
     }
   };
 
-  // --- NEW TASK ---
   const handleAddTask = () => {
     const newTask: Task = {
       id: `t${Date.now()}`,
@@ -263,7 +318,7 @@ function App() {
         </div>
       </header>
 
-      {/* Filter Bar (Only in Board/Sheet) */}
+      {/* Filter Bar */}
       {activeTab !== 'setup' && (
         <div className="bg-white px-6 py-3 border-b border-gray-100 flex items-center gap-4 overflow-x-auto shrink-0">
           <div className="flex items-center bg-gray-100 rounded-lg px-3 py-2 w-64 shrink-0">
@@ -295,7 +350,25 @@ function App() {
 
           <div className="flex-1"></div>
           
-          {/* Group By Toggle (Board Only) */}
+          {/* Create Button Contextual to GroupBy */}
+          {activeTab === 'board' && groupBy === 'Project' && (
+             <button 
+               onClick={() => setIsAddProjectModalOpen(true)}
+               className="mr-2 text-xs font-bold text-blue-600 bg-blue-50 px-3 py-1.5 rounded-lg hover:bg-blue-100 transition-colors flex items-center gap-1"
+             >
+               <i className="fas fa-plus"></i> New Project
+             </button>
+          )}
+          {activeTab === 'board' && groupBy === 'Assignee' && (
+             <button 
+               onClick={() => setIsAddMemberModalOpen(true)}
+               className="mr-2 text-xs font-bold text-green-600 bg-green-50 px-3 py-1.5 rounded-lg hover:bg-green-100 transition-colors flex items-center gap-1"
+             >
+               <i className="fas fa-plus"></i> New Member
+             </button>
+          )}
+
+          {/* Group By Toggle */}
           {activeTab === 'board' && (
             <div className="flex items-center bg-gray-50 p-1 rounded-lg border border-gray-100">
                <span className="text-[10px] font-bold text-gray-400 uppercase px-2">Group By</span>
@@ -329,6 +402,8 @@ function App() {
               onRefresh={() => fetchFromSheet(sheetUrl)}
               onUpdateTask={handleUpdateTask}
               onSelectTask={setSelectedTask}
+              onAddProject={() => setIsAddProjectModalOpen(true)}
+              onAddMember={() => setIsAddMemberModalOpen(true)}
            />
          )}
 
@@ -402,7 +477,6 @@ function App() {
               <div className="flex-1 flex overflow-hidden">
                  {/* Left: Main Details */}
                  <div className="flex-1 p-8 overflow-y-auto space-y-8 custom-scrollbar">
-                    
                     {/* Description */}
                     <div>
                       <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3">Description</h4>
@@ -555,7 +629,12 @@ function App() {
                     </div>
 
                     <div>
-                       <label className="text-[10px] font-black uppercase text-gray-400 tracking-wider block mb-2">Project</label>
+                       <div className="flex justify-between items-center mb-2">
+                         <label className="text-[10px] font-black uppercase text-gray-400 tracking-wider block">Project</label>
+                         <button onClick={() => setIsAddProjectModalOpen(true)} className="text-[10px] font-bold text-blue-500 hover:text-blue-700">
+                           + Add New
+                         </button>
+                       </div>
                        <select 
                          className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2.5 text-sm font-semibold outline-none focus:border-blue-400"
                          value={selectedTask.projectId}
@@ -566,7 +645,12 @@ function App() {
                     </div>
 
                     <div>
-                       <label className="text-[10px] font-black uppercase text-gray-400 tracking-wider block mb-2">Assignee</label>
+                       <div className="flex justify-between items-center mb-2">
+                         <label className="text-[10px] font-black uppercase text-gray-400 tracking-wider block">Assignee</label>
+                         <button onClick={() => setIsAddMemberModalOpen(true)} className="text-[10px] font-bold text-blue-500 hover:text-blue-700">
+                           + Add New
+                         </button>
+                       </div>
                        <select 
                          className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2.5 text-sm font-semibold outline-none focus:border-blue-400"
                          value={selectedTask.assigneeId}
@@ -598,6 +682,59 @@ function App() {
                  </div>
               </div>
            </div>
+        </div>
+      )}
+
+      {/* Add Project Modal */}
+      {isAddProjectModalOpen && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl space-y-4">
+             <h3 className="font-bold text-lg text-gray-800">Add New Project</h3>
+             <input 
+               className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500"
+               placeholder="Project Name"
+               value={newProjectName}
+               onChange={e => setNewProjectName(e.target.value)}
+             />
+             <div className="flex items-center gap-2">
+               <label className="text-sm text-gray-500">Color:</label>
+               <input 
+                 type="color" 
+                 value={newProjectColor} 
+                 onChange={e => setNewProjectColor(e.target.value)}
+                 className="h-8 w-8 rounded cursor-pointer border-none"
+               />
+             </div>
+             <div className="flex justify-end gap-2 pt-2">
+                <button onClick={() => setIsAddProjectModalOpen(false)} className="px-4 py-2 text-sm text-gray-500 hover:bg-gray-100 rounded-lg">Cancel</button>
+                <button onClick={handleCreateProject} className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700">Create</button>
+             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Member Modal */}
+      {isAddMemberModalOpen && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl space-y-4">
+             <h3 className="font-bold text-lg text-gray-800">Add New Member</h3>
+             <input 
+               className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500"
+               placeholder="Full Name"
+               value={newMemberName}
+               onChange={e => setNewMemberName(e.target.value)}
+             />
+             <input 
+               className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500"
+               placeholder="Email Address"
+               value={newMemberEmail}
+               onChange={e => setNewMemberEmail(e.target.value)}
+             />
+             <div className="flex justify-end gap-2 pt-2">
+                <button onClick={() => setIsAddMemberModalOpen(false)} className="px-4 py-2 text-sm text-gray-500 hover:bg-gray-100 rounded-lg">Cancel</button>
+                <button onClick={handleCreateMember} className="px-4 py-2 text-sm bg-green-600 text-white rounded-lg font-bold hover:bg-green-700">Add Member</button>
+             </div>
+          </div>
         </div>
       )}
     </div>
