@@ -1,6 +1,7 @@
+
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { Task, User, Project, Priority, Status, Comment } from './types';
+import { Task, User, Project, Priority, Status, Comment, SubTask } from './types';
 import { MOCK_USERS, MOCK_PROJECTS, INITIAL_TASKS, DEFAULT_STATUSES, DEFAULT_PRIORITIES } from './constants';
 import TaskCard from './components/TaskCard';
 import SheetView from './components/SheetView';
@@ -35,23 +36,35 @@ function App() {
 
   const fetchFromSheet = useCallback(async (url: string) => {
     if (!url) return;
+    
+    if (url.includes('/edit')) {
+      alert("⚠️ Error: You pasted the Google Sheet/Script Editor URL. Please deploy the script as a 'Web App' and use the URL ending in '/exec'.");
+      return;
+    }
+
     setIsSyncing(true);
+    
     try {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error("Network response was not ok");
+      const response = await fetch(url, {
+        method: 'GET',
+        mode: 'cors',
+        redirect: 'follow',
+        headers: { 'Accept': 'application/json' }
+      });
+
+      if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
       const data = await response.json();
 
-      // Process Config first so we have the IDs for mapping
       let currentStatuses = statuses;
       let currentPriorities = priorities;
       let currentUsers = users;
       let currentProjects = projects;
 
-      if (data.config && data.config.length > 0) {
+      if (data.config && Array.isArray(data.config)) {
         currentStatuses = data.config
           .filter((c: any) => c["Status Options"])
           .map((c: any, i: number) => ({ id: `s${i+1}`, name: c["Status Options"] }));
-        setStatuses(currentStatuses);
+        if (currentStatuses.length > 0) setStatuses(currentStatuses);
 
         currentPriorities = data.config
           .filter((c: any) => c["Priority Options"])
@@ -60,35 +73,42 @@ function App() {
             name: c["Priority Options"], 
             color: c["Priority Color Code"] || 'bg-gray-100 text-gray-700 border-gray-200' 
           }));
-        setPriorities(currentPriorities);
+        if (currentPriorities.length > 0) setPriorities(currentPriorities);
       }
 
-      if (data.members && data.members.length > 0) {
+      if (data.members && Array.isArray(data.members)) {
         currentUsers = data.members.map((m: any) => ({
           id: m["Internal ID"] || `u${Math.random()}`,
-          name: m["Member Name"],
+          name: m["Member Name"] || 'Unknown',
           email: m["Email Address"] || '',
           avatar: m["Avatar URL"] || `https://picsum.photos/seed/${m["Member Name"]}/40/40`
         }));
         setUsers(currentUsers);
       }
 
-      if (data.projects && data.projects.length > 0) {
+      if (data.projects && Array.isArray(data.projects)) {
         currentProjects = data.projects.map((p: any) => ({
           id: p["Internal ID"] || `p${Math.random()}`,
-          name: p["Project Name"],
+          name: p["Project Name"] || 'Untitled Project',
           color: p["Color Theme"] || 'bg-blue-100 text-blue-800'
         }));
         setProjects(currentProjects);
       }
 
-      if (data.tasks) {
+      if (data.tasks && Array.isArray(data.tasks)) {
         const mappedTasks: Task[] = data.tasks.map((t: any) => {
-          // Resolve IDs using the variables we just calculated locally to avoid stale state
-          const sId = currentStatuses.find(s => s.name === t["Status"])?.id || currentStatuses[0]?.id || 's1';
-          const pId = currentPriorities.find(p => p.name === t["Priority"])?.id || currentPriorities[1]?.id || 'pr2';
+          const sId = currentStatuses.find(s => s.name === t["Status"])?.id || (currentStatuses[0]?.id || 's1');
+          const pId = currentPriorities.find(p => p.name === t["Priority"])?.id || (currentPriorities[1]?.id || 'pr2');
           const uId = currentUsers.find(u => u.name === t["Assignee"])?.id || '';
           const projId = currentProjects.find(p => p.name === t["Project"])?.id || '';
+
+          // Parse Subtasks from Checklist format: "[ ] Subtask Name" or "[x] Subtask Name"
+          const rawSubtasks = (t["Subtasks"] || "").split('\n').filter(Boolean);
+          const subtasks: SubTask[] = rawSubtasks.map((st: string, i: number) => {
+            const completed = st.startsWith('[x]');
+            const title = st.replace(/^\[[ x]\]\s*/, '').trim();
+            return { id: `st-${i}-${Date.now()}`, title, completed };
+          });
 
           const comments: Comment[] = (t["Activity Log"] || "").split('\n').filter(Boolean).map((log: string, i: number) => {
             const match = log.match(/\[(.*?)\] (.*) \((.*)\)/);
@@ -111,22 +131,21 @@ function App() {
             dueDate: t["Due Date"] ? new Date(t["Due Date"]).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
             referenceLinks: (t["Reference Links"] || "").split('\n').filter(Boolean),
             comments,
-            subtasks: [],
+            subtasks,
             createdAt: new Date().toISOString()
           };
         });
         setTasks(mappedTasks);
       }
+      
       setLastSynced(new Date().toLocaleTimeString());
-    } catch (e) {
-      console.error("Sync pull error:", e);
-      alert("Error syncing from sheet. Check your URL and Apps Script deployment.");
+    } catch (e: any) {
+      console.error("TeamSync Sync Error:", e);
     } finally {
       setIsSyncing(false);
     }
-  }, []); // Remove dependencies to keep it stable
+  }, [statuses, priorities, users, projects]);
 
-  // Handle URL changes and initial load
   useEffect(() => {
     localStorage.setItem('teamSync_sheetUrl', sheetUrl);
     if (sheetUrl && lastSynced === 'Never') {
@@ -143,6 +162,9 @@ function App() {
       const status = statuses.find(s => s.id === task.statusId)?.name || '';
       const priority = priorities.find(p => p.id === task.priorityId)?.name || '';
 
+      // Format Subtasks for Sheet
+      const formattedSubtasks = (task.subtasks || []).map(st => `${st.completed ? '[x]' : '[ ]'} ${st.title}`).join('\n');
+
       const payload = {
         targetSheet: "Tasks",
         action: "upsert",
@@ -156,6 +178,7 @@ function App() {
           "Due Date": task.dueDate,
           "Assignee": assignee,
           "Project": project,
+          "Subtasks": formattedSubtasks,
           "Reference Links": (task.referenceLinks || []).join('\n'),
           "Activity Log": (task.comments || []).map(c => `[${users.find(u => u.id === c.authorId)?.name || 'User'}] ${c.text} (${c.createdAt})`).join('\n')
         }
@@ -164,8 +187,10 @@ function App() {
       await fetch(sheetUrl, {
         method: 'POST',
         mode: 'no-cors',
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        headers: { 'Content-Type': 'text/plain' }
       });
+      
       setLastSynced(new Date().toLocaleTimeString());
     } catch (e) {
       console.error("Sync push error:", e);
@@ -174,7 +199,6 @@ function App() {
     }
   };
 
-  // --- GET COLUMNS LOGIC ---
   const getColumns = useCallback(() => {
     switch (groupBy) {
       case 'Status':
@@ -193,8 +217,6 @@ function App() {
         return [];
     }
   }, [groupBy, statuses, priorities, users, projects]);
-
-  // --- HANDLERS ---
 
   const handleUpdateTask = (updatedTask: Task) => {
     setTasks(prev => prev.map(t => t.id === updatedTask.id ? updatedTask : t));
@@ -304,6 +326,7 @@ function App() {
         "Due Date": t.dueDate,
         "Assignee": users.find(u => u.id === t.assigneeId)?.name || '',
         "Project": projects.find(p => p.id === t.projectId)?.name || '',
+        "Subtasks": (t.subtasks || []).map(st => `${st.completed ? '[x]' : '[ ]'} ${st.title}`).join('\n'),
         "Reference Links": (t.referenceLinks || []).join('\n'),
         "Activity Log": (t.comments || []).map(c => `[${users.find(u => u.id === c.authorId)?.name || 'User'}] ${c.text} (${c.createdAt})`).join('\n')
     }));
