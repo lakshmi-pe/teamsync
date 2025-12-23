@@ -1,6 +1,8 @@
 
 import { Priority, Project, Status, Task, User } from "./types";
 
+export const DEFAULT_SHEET_URL = "https://script.google.com/macros/s/AKfycbye2krg4-fZEwhBADB4N0uRXEa4TcIpR0hjZh_hvgf90NWVzBOU35QhMyt7dtYCG02dQg/exec";
+
 export const DEFAULT_STATUSES: Status[] = [
   { id: 's1', name: 'To Do' },
   { id: 's2', name: 'In Progress' },
@@ -24,9 +26,9 @@ export const MOCK_USERS: User[] = [
 ];
 
 export const MOCK_PROJECTS: Project[] = [
-  { id: 'p1', name: 'Website Redesign', color: 'bg-blue-100 text-blue-800' },
-  { id: 'p2', name: 'Q4 Marketing', color: 'bg-green-100 text-green-800' },
-  { id: 'p3', name: 'Internal Audit', color: 'bg-purple-100 text-purple-800' },
+  { id: 'p1', name: 'Website Redesign', color: 'bg-blue-100 text-blue-800', description: 'Overhaul of the corporate website with new branding.' },
+  { id: 'p2', name: 'Q4 Marketing', color: 'bg-green-100 text-green-800', description: 'End of year campaigns and social media push.' },
+  { id: 'p3', name: 'Internal Audit', color: 'bg-purple-100 text-purple-800', description: 'Review of security protocols and compliance.' },
 ];
 
 export const INITIAL_TASKS: Task[] = [
@@ -34,7 +36,10 @@ export const INITIAL_TASKS: Task[] = [
     id: 't1',
     title: 'Design Home Page Mockups',
     description: 'Create high-fidelity mockups for the new homepage based on wireframes.',
-    referenceLinks: ['https://docs.google.com/document/d/1example'],
+    referenceLinks: [
+        { title: 'PRD', url: 'https://docs.google.com/document/d/1example' },
+        { title: 'Inspiration', url: 'https://dribbble.com/shots/example' }
+    ],
     activityTrail: [
       'Initial design draft completed.'
     ],

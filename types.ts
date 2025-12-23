@@ -21,13 +21,19 @@ export interface Project {
   id: string;
   name: string;
   color: string;
+  description?: string;
+}
+
+export interface ReferenceLink {
+  title: string;
+  url: string;
 }
 
 export interface Task {
   id: string;
   title: string;
   description?: string;
-  referenceLinks?: string[]; // Stored as newline separated string in sheet
+  referenceLinks?: ReferenceLink[]; // Stored as "Title|URL" newline separated string in sheet
   activityTrail?: string[];  // Stored as newline separated string in sheet
   projectId: string;
   assigneeId: string;

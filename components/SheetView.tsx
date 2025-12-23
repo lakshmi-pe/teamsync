@@ -90,8 +90,10 @@ const SheetView: React.FC<SheetViewProps> = ({
                  </td>
                </tr>
             ) : (
-              tasks.map(task => (
-                <tr key={task.id} className="hover:bg-blue-50/20 transition-colors group">
+              tasks.map(task => {
+                const isDone = statuses.find(s => s.id === task.statusId)?.name === 'Done' || task.statusId === 's4';
+                return (
+                <tr key={task.id} className={`hover:bg-blue-50/20 transition-colors group ${isDone ? 'opacity-50 grayscale-[0.8] hover:grayscale-0 hover:opacity-100 bg-gray-50/50' : ''}`}>
                   {/* Title */}
                   <td className="p-2 border-r border-transparent">
                     <input 
@@ -168,7 +170,7 @@ const SheetView: React.FC<SheetViewProps> = ({
                     </button>
                   </td>
                 </tr>
-              ))
+              )})
             )}
           </tbody>
         </table>

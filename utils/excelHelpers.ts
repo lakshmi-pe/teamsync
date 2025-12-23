@@ -13,7 +13,7 @@ export const downloadTemplate = () => {
     [
       "t1", "Sample Task", "Description of the task", "To Do", "Medium", 
       new Date().toISOString().split('T')[0], "Alice Johnson", "Website Redesign", 
-      "http://google.com", "Created today", "- Subtask 1\n- Subtask 2"
+      "Google Docs|http://google.com\nDesign Specs|http://figma.com", "Created today", "- Subtask 1\n- Subtask 2"
     ]
   ];
   const wsTasks = XLSX.utils.aoa_to_sheet([tasksHeaders, ...tasksData]);
@@ -32,11 +32,11 @@ export const downloadTemplate = () => {
   XLSX.utils.book_append_sheet(wb, wsMembers, "Team Members");
 
   // 3. Projects Sheet
-  const projectsHeaders = ["Name", "ColorHex"];
+  const projectsHeaders = ["Name", "ColorHex", "Description"];
   const projectsData = [
-    ["Website Redesign", "#DBEAFE"],
-    ["Q4 Marketing", "#DCFCE7"],
-    ["Internal Audit", "#F3E8FF"]
+    ["Website Redesign", "#DBEAFE", "Overhaul of the corporate website."],
+    ["Q4 Marketing", "#DCFCE7", "End of year campaigns."],
+    ["Internal Audit", "#F3E8FF", "Security and compliance check."]
   ];
   const wsProjects = XLSX.utils.aoa_to_sheet([projectsHeaders, ...projectsData]);
   XLSX.utils.book_append_sheet(wb, wsProjects, "Projects");

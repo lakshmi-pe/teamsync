@@ -1,12 +1,13 @@
 
 import React from 'react';
-import { Task, User, Project, Priority, GroupByOption } from '../types';
+import { Task, User, Project, Priority, GroupByOption, Status } from '../types';
 
 interface TaskCardProps {
   task: Task;
   assignee?: User;
   project?: Project;
   priority?: Priority;
+  status?: Status;
   groupBy: GroupByOption;
   onDragStart: (e: React.DragEvent, taskId: string) => void;
   onClick: (task: Task) => void;
@@ -17,6 +18,7 @@ const TaskCard: React.FC<TaskCardProps> = ({
   assignee, 
   project, 
   priority, 
+  status,
   groupBy,
   onDragStart, 
   onClick
@@ -35,12 +37,15 @@ const TaskCard: React.FC<TaskCardProps> = ({
   if (priority?.name === 'High') borderColor = 'border-orange-200';
   if (priority?.name === 'Critical') borderColor = 'border-red-200';
 
+  // Check if Done for styling
+  const isDone = status?.name === 'Done' || status?.id === 's4';
+
   return (
     <div 
       draggable 
       onDragStart={(e) => onDragStart(e, task.id)}
       onClick={() => onClick(task)}
-      className={`bg-white p-4 rounded-xl shadow-sm border ${borderColor} cursor-grab active:cursor-grabbing hover:shadow-md transition-all group relative overflow-hidden`}
+      className={`bg-white p-4 rounded-xl shadow-sm border ${borderColor} cursor-grab active:cursor-grabbing hover:shadow-md transition-all group relative overflow-hidden ${isDone ? 'opacity-60 grayscale-[0.8] hover:grayscale-0 hover:opacity-100' : ''}`}
     >
       <div className="flex justify-between items-start mb-2">
         <h4 className="font-semibold text-gray-800 text-sm leading-snug flex-1 mr-2">{task.title}</h4>
@@ -62,6 +67,13 @@ const TaskCard: React.FC<TaskCardProps> = ({
       </div>
 
       <div className="flex flex-wrap gap-2 mb-3">
+        {/* Explicit Status Badge */}
+        {status && (
+           <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-gray-800 text-white">
+             {status.name}
+           </span>
+        )}
+
         {groupBy !== 'Project' && project && (
           <span className={`text-[10px] font-medium px-2 py-0.5 rounded-md truncate max-w-[100px] ${project.color || 'bg-gray-100 text-gray-600'}`}>
             {project.name}

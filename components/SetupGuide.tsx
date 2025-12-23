@@ -3,17 +3,20 @@ import React, { useState } from 'react';
 import { downloadTemplate } from '../utils/excelHelpers';
 
 const APPS_SCRIPT_CODE = `/**
- * TEAMSYNC BRIDGE API v1.0
- * Handles 2-way sync between TeamSync Web App and Google Sheets
+ * TEAMSYNC BRIDGE API v1.1
+ * Handles 2-way sync with Auto-Schema Evolution
  */
 
 function doGet(e) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   
-  // Helper to safely get data
   const getSheetData = (sheetName) => {
     const sheet = ss.getSheetByName(sheetName);
     if (!sheet) return [];
+    
+    // Handle empty sheets
+    if (sheet.getLastRow() < 1) return [];
+
     const rows = sheet.getDataRange().getValues();
     const headers = rows.shift(); // Remove headers
     return rows.map(row => {
@@ -47,15 +50,32 @@ function doPost(e) {
   const idColumn = payload.idColumn || "ID";
   
   if (action === "upsert") {
-    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    const idIndex = headers.indexOf(idColumn);
+    // 1. Get current headers
+    let lastCol = sheet.getLastColumn();
+    let headers = [];
+    if (lastCol > 0) {
+      headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    }
     
+    // 2. Auto-Schema: Add missing columns if they exist in the incoming data
+    const incomingKeys = Object.keys(data);
+    const missingColumns = incomingKeys.filter(k => !headers.includes(k));
+    
+    if (missingColumns.length > 0) {
+      // Append new headers to the first row
+      sheet.getRange(1, headers.length + 1, 1, missingColumns.length).setValues([missingColumns]);
+      // Refresh headers
+      lastCol = sheet.getLastColumn();
+      headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    }
+    
+    const idIndex = headers.indexOf(idColumn);
     if (idIndex === -1) return ContentService.createTextOutput("Error: ID Column not found");
     
     const allData = sheet.getDataRange().getValues();
     let rowIndex = -1;
     
-    // Find existing row
+    // Find existing row (skip header)
     for (let i = 1; i < allData.length; i++) {
       if (allData[i][idIndex] == data[idColumn]) {
         rowIndex = i + 1; // 1-based index
@@ -64,7 +84,6 @@ function doPost(e) {
     }
     
     const rowValues = headers.map(h => {
-       // Convert arrays/objects to string if necessary for the cell
        return data[h] !== undefined ? data[h] : "";
     });
 
@@ -76,7 +95,6 @@ function doPost(e) {
       sheet.appendRow(rowValues);
     }
   } else if (action === "delete") {
-    // Basic delete logic implemented if needed
     const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
     const idIndex = headers.indexOf(idColumn);
     const allData = sheet.getDataRange().getValues();

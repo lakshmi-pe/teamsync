@@ -1,13 +1,14 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Task, User, Project, Priority, Status, GroupByOption } from './types';
-import { MOCK_USERS, MOCK_PROJECTS, INITIAL_TASKS, DEFAULT_STATUSES, DEFAULT_PRIORITIES } from './constants';
+import { Task, User, Project, Priority, Status, GroupByOption, ReferenceLink } from './types';
+import { MOCK_USERS, MOCK_PROJECTS, INITIAL_TASKS, DEFAULT_STATUSES, DEFAULT_PRIORITIES, DEFAULT_SHEET_URL } from './constants';
 import TaskCard from './components/TaskCard';
 import SheetView from './components/SheetView';
 import SetupGuide from './components/SetupGuide';
+import EisenhowerMatrix from './components/EisenhowerMatrix';
 
 function App() {
-  const [activeTab, setActiveTab] = useState<'board' | 'sheet' | 'setup'>('board');
+  const [activeTab, setActiveTab] = useState<'board' | 'sheet' | 'matrix' | 'setup'>('board');
   const [groupBy, setGroupBy] = useState<GroupByOption>('Status');
   
   // Data State
@@ -26,8 +27,8 @@ function App() {
     search: ''
   });
   
-  // Sync State
-  const [sheetUrl, setSheetUrl] = useState<string>(() => localStorage.getItem('teamSync_sheetUrl') || '');
+  // Sync State - Using Hardcoded Default
+  const [sheetUrl, setSheetUrl] = useState<string>(() => localStorage.getItem('teamSync_sheetUrl') || DEFAULT_SHEET_URL);
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSynced, setLastSynced] = useState<string>('Never');
 
@@ -39,6 +40,10 @@ function App() {
   const [manageModalType, setManageModalType] = useState<'project' | 'member' | null>(null);
   const [newItemName, setNewItemName] = useState('');
   const [newItemExtra, setNewItemExtra] = useState(''); // Color for project, Email for member
+  const [newItemDescription, setNewItemDescription] = useState(''); // Description for project
+
+  // Project Summary State
+  const [summaryProjectId, setSummaryProjectId] = useState<string | null>(null);
 
   // --- SYNC ENGINE ---
 
@@ -53,7 +58,8 @@ function App() {
     let newProjects = (data.projects || []).map((r: any) => ({ 
       id: r.Name, 
       name: r.Name, 
-      color: r.ColorHex ? `bg-[${r.ColorHex}]` : 'bg-gray-100' 
+      color: r.ColorHex ? `bg-[${r.ColorHex}]` : 'bg-gray-100',
+      description: r.Description || ''
     }));
     let newUsers = (data.members || []).map((r: any) => ({ 
       id: r.Name, 
@@ -66,6 +72,17 @@ function App() {
     const mappedTasks: Task[] = [];
     if (data.tasks && Array.isArray(data.tasks)) {
       data.tasks.forEach((t: any) => {
+         // Parse RefLinks "Title|URL"
+         const rawLinks = t["RefLinks"] ? String(t["RefLinks"]).split('\n').filter(Boolean) : [];
+         const parsedLinks: ReferenceLink[] = rawLinks.map((l: string) => {
+           const parts = l.split('|');
+           // Handle legacy format (just url) or new format (title|url)
+           if (parts.length >= 2) {
+             return { title: parts[0].trim(), url: parts.slice(1).join('|').trim() };
+           }
+           return { title: 'Link', url: l.trim() };
+         });
+
          mappedTasks.push({
           id: t["ID"] ? String(t["ID"]) : `t${Date.now()}-${Math.random()}`,
           title: t["Title"] || 'Untitled',
@@ -75,7 +92,7 @@ function App() {
           assigneeId: t["Assignee"] || '',
           projectId: t["Project"] || '',
           dueDate: t["DueDate"] ? new Date(t["DueDate"]).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
-          referenceLinks: t["RefLinks"] ? String(t["RefLinks"]).split('\n').filter(Boolean) : [],
+          referenceLinks: parsedLinks,
           activityTrail: t["ActivityTrail"] ? String(t["ActivityTrail"]).split('\n').filter(Boolean) : [],
           subtasks: t["Subtasks"] ? String(t["Subtasks"]).split('\n').filter(Boolean) : [],
           updatedAt: new Date().toISOString()
@@ -84,21 +101,16 @@ function App() {
       setTasks(mappedTasks);
     }
 
-    // 3. Auto-Discovery: Add missing Projects/Assignees found in Tasks but missing in Lists
-    // This ensures names typed directly into the sheet (Assignee column) are picked up.
+    // 3. Auto-Discovery
     const projectMap = new Map(newProjects.map((p: Project) => [p.name, p]));
     const userMap = new Map(newUsers.map((u: User) => [u.name, u]));
-    let listsUpdated = false;
-
+    
     mappedTasks.forEach(t => {
-       // Check Project
        if (t.projectId && !projectMap.has(t.projectId)) {
-          const autoProject = { id: t.projectId, name: t.projectId, color: 'bg-gray-100' };
+          const autoProject = { id: t.projectId, name: t.projectId, color: 'bg-gray-100', description: '' };
           newProjects.push(autoProject);
           projectMap.set(t.projectId, autoProject);
-          listsUpdated = true;
        }
-       // Check Assignee
        if (t.assigneeId && !userMap.has(t.assigneeId)) {
           const autoUser = { 
             id: t.assigneeId, 
@@ -108,11 +120,9 @@ function App() {
           };
           newUsers.push(autoUser);
           userMap.set(t.assigneeId, autoUser);
-          listsUpdated = true;
        }
     });
 
-    // Update Domain Lists
     if(newStatuses.length) setStatuses(newStatuses);
     if(newPriorities.length) setPriorities(newPriorities);
     setProjects(newProjects);
@@ -141,7 +151,13 @@ function App() {
     localStorage.setItem('teamSync_sheetUrl', sheetUrl);
   }, [sheetUrl]);
 
-  // Generic Sync function for any tab
+  // Initial Sync if URL is present (it is hardcoded now)
+  useEffect(() => {
+      if(sheetUrl && lastSynced === 'Never') {
+          fetchFromSheet(sheetUrl);
+      }
+  }, []); // Run once on mount
+
   const syncReferenceData = async (sheetName: string, action: 'upsert' | 'delete', idCol: string, data: any) => {
     if (!sheetUrl) return;
     setIsSyncing(true);
@@ -167,6 +183,7 @@ function App() {
   };
 
   const pushTaskToSheet = async (task: Task) => {
+    const linksStr = (task.referenceLinks || []).map(l => `${l.title}|${l.url}`).join('\n');
     await syncReferenceData("Tasks", "upsert", "ID", {
           "ID": task.id,
           "Title": task.title,
@@ -176,7 +193,7 @@ function App() {
           "DueDate": task.dueDate,
           "Assignee": task.assigneeId,
           "Project": task.projectId,
-          "RefLinks": (task.referenceLinks || []).join('\n'),
+          "RefLinks": linksStr,
           "ActivityTrail": (task.activityTrail || []).join('\n'),
           "Subtasks": (task.subtasks || []).join('\n')
     });
@@ -199,16 +216,25 @@ function App() {
   const handleAddProject = async () => {
     if (!newItemName.trim()) return;
     const color = newItemExtra || '#DBEAFE';
-    const newProject: Project = { id: newItemName, name: newItemName, color: `bg-[${color}]` };
+    const newProject: Project = { 
+      id: newItemName, 
+      name: newItemName, 
+      color: `bg-[${color}]`,
+      description: newItemDescription 
+    };
     setProjects(prev => [...prev, newProject]);
-    await syncReferenceData("Projects", "upsert", "Name", { "Name": newProject.name, "ColorHex": color });
+    await syncReferenceData("Projects", "upsert", "Name", { 
+      "Name": newProject.name, 
+      "ColorHex": color,
+      "Description": newProject.description 
+    });
     setNewItemName('');
+    setNewItemDescription('');
   };
 
   const handleDeleteProject = async (id: string) => {
     if (!window.confirm(`Delete project "${id}"? Tasks will be unassigned.`)) return;
     setProjects(prev => prev.filter(p => p.id !== id));
-    // Update tasks that were in this project
     const affectedTasks = tasks.filter(t => t.projectId === id);
     affectedTasks.forEach(t => handleUpdateTask({ ...t, projectId: '' }));
     await syncReferenceData("Projects", "delete", "Name", { id: id });
@@ -257,6 +283,12 @@ function App() {
     const matchesPriority = filters.priority === 'all' || t.priorityId === filters.priority;
     const matchesSearch = !filters.search || t.title.toLowerCase().includes(filters.search.toLowerCase());
     return matchesProject && matchesAssignee && matchesStatus && matchesPriority && matchesSearch;
+  }).sort((a, b) => {
+    const isADone = statuses.find(s => s.id === a.statusId)?.name === 'Done' || a.statusId === 's4';
+    const isBDone = statuses.find(s => s.id === b.statusId)?.name === 'Done' || b.statusId === 's4';
+    if (isADone && !isBDone) return 1;
+    if (!isADone && isBDone) return -1;
+    return new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime();
   });
 
   const handleDrop = (e: React.DragEvent, colId: string, type: string) => {
@@ -309,7 +341,7 @@ function App() {
            <div className="h-6 w-px bg-gray-200 mx-2"></div>
 
            <nav className="flex bg-gray-100 rounded-lg p-1">
-             {(['board', 'sheet', 'setup'] as const).map(tab => (
+             {(['board', 'sheet', 'matrix', 'setup'] as const).map(tab => (
                <button 
                  key={tab} 
                  onClick={() => setActiveTab(tab)}
@@ -343,7 +375,7 @@ function App() {
         </div>
       </header>
 
-      {/* Filter Bar */}
+      {/* Filter Bar (Hide in Setup) */}
       {activeTab !== 'setup' && (
         <div className="bg-white px-6 py-3 border-b border-gray-100 flex items-center gap-4 overflow-x-auto shrink-0">
           <div className="flex items-center bg-gray-100 rounded-lg px-3 py-2 w-64 shrink-0">
@@ -378,7 +410,7 @@ function App() {
           {/* Create Button Contextual to GroupBy */}
           {activeTab === 'board' && groupBy === 'Project' && (
              <button 
-               onClick={() => { setManageModalType('project'); setNewItemName(''); setNewItemExtra(''); }}
+               onClick={() => { setManageModalType('project'); setNewItemName(''); setNewItemExtra(''); setNewItemDescription(''); }}
                className="mr-2 text-xs font-bold text-blue-600 bg-blue-50 px-3 py-1.5 rounded-lg hover:bg-blue-100 transition-colors flex items-center gap-1"
              >
                <i className="fas fa-cog"></i> Manage Projects
@@ -393,7 +425,7 @@ function App() {
              </button>
           )}
 
-          {/* Group By Toggle */}
+          {/* Group By Toggle (Only for Board) */}
           {activeTab === 'board' && (
             <div className="flex items-center bg-gray-50 p-1 rounded-lg border border-gray-100">
                <span className="text-[10px] font-bold text-gray-400 uppercase px-2">Group By</span>
@@ -415,6 +447,15 @@ function App() {
       <main className="flex-1 overflow-hidden p-6 relative">
          {activeTab === 'setup' && <SetupGuide />}
          
+         {activeTab === 'matrix' && (
+           <EisenhowerMatrix 
+             tasks={filteredTasks} 
+             priorities={priorities} 
+             statuses={statuses} 
+             onSelectTask={setSelectedTask} 
+           />
+         )}
+
          {activeTab === 'sheet' && (
            <SheetView 
               tasks={filteredTasks} 
@@ -435,6 +476,9 @@ function App() {
          {activeTab === 'board' && (
            <div className="flex h-full gap-6 overflow-x-auto pb-4">
              {getColumns().map(col => {
+               // Find project description if grouping by Project
+               const colProject = groupBy === 'Project' ? projects.find(p => p.id === col.id) : null;
+
                const colTasks = filteredTasks.filter(t => {
                   if (groupBy === 'Status') return t.statusId === col.id;
                   if (groupBy === 'Priority') return t.priorityId === col.id;
@@ -452,26 +496,47 @@ function App() {
                    onDrop={e => handleDrop(e, col.id, col.type)}
                    style={{ borderColor: draggedOverColumn === col.id ? '#3B82F6' : 'transparent' }}
                  >
-                    <div className="p-4 flex justify-between items-center group/header">
-                       <h3 className="font-bold text-sm text-gray-700 flex items-center gap-2">
-                         {col.title}
-                         {/* Delete button in column header if applicable */}
-                         {col.id && (col.type === 'project' || col.type === 'assignee') && (
-                           <button 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              col.type === 'project' ? handleDeleteProject(col.id) : handleDeleteMember(col.id);
-                            }}
-                            className="opacity-0 group-hover/header:opacity-100 text-gray-300 hover:text-red-500 transition-all text-xs"
-                            title="Delete this column (and updating tasks)"
-                           >
-                             <i className="fas fa-trash"></i>
-                           </button>
-                         )}
-                       </h3>
-                       <span className="bg-white px-2 py-0.5 rounded-md text-[10px] font-bold text-gray-400 shadow-sm border border-gray-100">
-                         {colTasks.length}
-                       </span>
+                    <div className="p-4 group/header relative">
+                       <div className="flex justify-between items-center mb-1">
+                          <h3 className="font-bold text-sm text-gray-700 flex items-center gap-2">
+                            {col.title}
+                            {/* Delete button in column header if applicable */}
+                            {col.id && (col.type === 'project' || col.type === 'assignee') && (
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  col.type === 'project' ? handleDeleteProject(col.id) : handleDeleteMember(col.id);
+                                }}
+                                className="opacity-0 group-hover/header:opacity-100 text-gray-300 hover:text-red-500 transition-all text-xs"
+                                title="Delete this column"
+                              >
+                                <i className="fas fa-trash"></i>
+                              </button>
+                            )}
+                          </h3>
+                          <div className="flex items-center gap-2">
+                            {/* Summary Generator Button for Projects */}
+                            {col.id && col.type === 'project' && (
+                                <button 
+                                  onClick={() => setSummaryProjectId(col.id)}
+                                  className="text-[10px] font-bold text-blue-500 hover:text-blue-700 bg-blue-50 px-2 py-1 rounded opacity-0 group-hover/header:opacity-100 transition-opacity"
+                                  title="Generate Reference Summary"
+                                >
+                                  <i className="fas fa-list-alt"></i> Summary
+                                </button>
+                            )}
+                            <span className="bg-white px-2 py-0.5 rounded-md text-[10px] font-bold text-gray-400 shadow-sm border border-gray-100">
+                              {colTasks.length}
+                            </span>
+                          </div>
+                       </div>
+                       
+                       {/* Project Description Display */}
+                       {colProject && colProject.description && (
+                         <div className="text-[10px] text-gray-500 leading-tight mt-1 line-clamp-3 bg-white/50 p-2 rounded-lg border border-gray-100 italic">
+                           {colProject.description}
+                         </div>
+                       )}
                     </div>
                     <div className="flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar">
                        {colTasks.map(task => (
@@ -481,6 +546,7 @@ function App() {
                            assignee={users.find(u => u.id === task.assigneeId)}
                            project={projects.find(p => p.id === task.projectId)}
                            priority={priorities.find(p => p.id === task.priorityId)}
+                           status={statuses.find(s => s.id === task.statusId)}
                            groupBy={groupBy}
                            onDragStart={(e, id) => { e.dataTransfer.setData('taskId', id); }}
                            onClick={setSelectedTask}
@@ -571,46 +637,53 @@ function App() {
                       </div>
                     </div>
 
-                    {/* Reference Links */}
+                    {/* Reference Links (New Format) */}
                     <div>
                       <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3">Reference Links</h4>
-                      <div className="space-y-2">
+                      <div className="space-y-3">
                         {(selectedTask.referenceLinks || []).map((link, i) => (
-                           <div key={i} className="flex items-center gap-3 group">
-                              <i className="fas fa-link text-gray-300 text-xs"></i>
-                              <input 
-                                className="flex-1 bg-transparent text-sm border-b border-transparent focus:border-gray-200 outline-none py-1 text-blue-600"
-                                value={link}
-                                onChange={e => {
-                                   const newLinks = [...(selectedTask.referenceLinks || [])];
-                                   newLinks[i] = e.target.value;
-                                   handleUpdateTask({...selectedTask, referenceLinks: newLinks});
-                                }}
-                              />
+                           <div key={i} className="flex gap-2 group items-start">
+                              <div className="pt-2">
+                                <i className="fas fa-link text-gray-300 text-xs"></i>
+                              </div>
+                              <div className="flex-1 space-y-1">
+                                <input 
+                                  className="w-full bg-transparent text-xs font-bold border-b border-transparent focus:border-gray-200 outline-none text-gray-700"
+                                  placeholder="Link Title"
+                                  value={link.title}
+                                  onChange={e => {
+                                     const newLinks = [...(selectedTask.referenceLinks || [])];
+                                     newLinks[i] = { ...newLinks[i], title: e.target.value };
+                                     handleUpdateTask({...selectedTask, referenceLinks: newLinks});
+                                  }}
+                                />
+                                <input 
+                                  className="w-full bg-transparent text-xs border-b border-transparent focus:border-gray-200 outline-none text-blue-500"
+                                  placeholder="URL"
+                                  value={link.url}
+                                  onChange={e => {
+                                     const newLinks = [...(selectedTask.referenceLinks || [])];
+                                     newLinks[i] = { ...newLinks[i], url: e.target.value };
+                                     handleUpdateTask({...selectedTask, referenceLinks: newLinks});
+                                  }}
+                                />
+                              </div>
                               <button onClick={() => {
                                 const newLinks = selectedTask.referenceLinks?.filter((_, idx) => idx !== i);
                                 handleUpdateTask({...selectedTask, referenceLinks: newLinks});
-                              }} className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-400">
+                              }} className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-400 pt-1">
                                 <i className="fas fa-times"></i>
                               </button>
                            </div>
                         ))}
-                        <div className="flex items-center gap-2 mt-2">
-                           <i className="fas fa-plus text-gray-400 text-xs"></i>
-                           <input 
-                             className="bg-transparent text-sm outline-none placeholder-gray-400"
-                             placeholder="Add link..."
-                             onKeyDown={e => {
-                               if (e.key === 'Enter') {
-                                 const val = e.currentTarget.value;
-                                 if (val.trim()) {
-                                   handleUpdateTask({...selectedTask, referenceLinks: [...(selectedTask.referenceLinks || []), val]});
-                                   e.currentTarget.value = '';
-                                 }
-                               }
-                             }}
-                           />
-                        </div>
+                        <button 
+                          onClick={() => {
+                             handleUpdateTask({...selectedTask, referenceLinks: [...(selectedTask.referenceLinks || []), { title: 'New Link', url: '' }]});
+                          }}
+                          className="flex items-center gap-2 mt-2 text-xs font-bold text-blue-500 hover:text-blue-700 bg-blue-50 px-3 py-1.5 rounded-lg w-fit transition-colors"
+                        >
+                           <i className="fas fa-plus"></i> Add Link
+                        </button>
                       </div>
                     </div>
 
@@ -671,7 +744,7 @@ function App() {
                     <div>
                        <div className="flex justify-between items-center mb-2">
                          <label className="text-[10px] font-black uppercase text-gray-400 tracking-wider block">Project</label>
-                         <button onClick={() => { setManageModalType('project'); setNewItemName(''); setNewItemExtra(''); }} className="text-[10px] font-bold text-blue-500 hover:text-blue-700">
+                         <button onClick={() => { setManageModalType('project'); setNewItemName(''); setNewItemExtra(''); setNewItemDescription(''); }} className="text-[10px] font-bold text-blue-500 hover:text-blue-700">
                            Manage
                          </button>
                        </div>
@@ -725,6 +798,60 @@ function App() {
         </div>
       )}
 
+      {/* Project Reference Summary Modal */}
+      {summaryProjectId && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[70] flex items-center justify-center p-4" onClick={() => setSummaryProjectId(null)}>
+             <div className="bg-white w-full max-w-2xl max-h-[80vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+                <div className="p-5 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+                    <div>
+                        <h3 className="font-bold text-lg text-gray-800">Project Reference Summary</h3>
+                        <p className="text-xs text-gray-500">{projects.find(p => p.id === summaryProjectId)?.name}</p>
+                    </div>
+                    <button onClick={() => setSummaryProjectId(null)} className="text-gray-400 hover:text-gray-600">
+                        <i className="fas fa-times"></i>
+                    </button>
+                </div>
+                <div className="flex-1 overflow-auto p-0">
+                    <table className="w-full text-left border-collapse">
+                        <thead className="bg-gray-50 sticky top-0">
+                            <tr>
+                                <th className="p-3 text-xs font-bold text-gray-500 border-b">Task</th>
+                                <th className="p-3 text-xs font-bold text-gray-500 border-b">Link Title</th>
+                                <th className="p-3 text-xs font-bold text-gray-500 border-b">URL</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                            {tasks
+                                .filter(t => t.projectId === summaryProjectId)
+                                .flatMap(t => (t.referenceLinks || []).map(link => ({ task: t.title, ...link })))
+                                .map((item, idx) => (
+                                    <tr key={idx} className="hover:bg-gray-50">
+                                        <td className="p-3 text-sm text-gray-800 font-medium">{item.task}</td>
+                                        <td className="p-3 text-sm text-gray-600">{item.title}</td>
+                                        <td className="p-3 text-sm text-blue-500 truncate max-w-[200px]">
+                                            <a href={item.url} target="_blank" rel="noopener noreferrer" className="hover:underline">
+                                                {item.url}
+                                            </a>
+                                        </td>
+                                    </tr>
+                            ))}
+                            {tasks.filter(t => t.projectId === summaryProjectId).every(t => !t.referenceLinks?.length) && (
+                                <tr>
+                                    <td colSpan={3} className="p-8 text-center text-gray-400 text-sm">No reference links found in this project.</td>
+                                </tr>
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+                <div className="p-4 border-t border-gray-100 bg-gray-50 flex justify-end">
+                    <button onClick={() => setSummaryProjectId(null)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm font-bold hover:bg-gray-300">
+                        Close
+                    </button>
+                </div>
+             </div>
+          </div>
+      )}
+
       {/* Unified Manage Modal */}
       {manageModalType && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
@@ -741,12 +868,17 @@ function App() {
              {/* List */}
              <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2 pr-2">
                 {(manageModalType === 'project' ? projects : users).map((item) => (
-                   <div key={item.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg group">
+                   <div key={item.id} className="flex items-start justify-between p-3 bg-gray-50 rounded-lg group">
                       <div className="flex items-center gap-3">
                          {manageModalType === 'member' && (
                            <img src={(item as User).avatar} className="w-8 h-8 rounded-full bg-gray-200" alt=""/>
                          )}
-                         <span className="font-medium text-sm text-gray-700">{item.name}</span>
+                         <div>
+                           <div className="font-medium text-sm text-gray-700">{item.name}</div>
+                           {manageModalType === 'project' && (item as Project).description && (
+                             <div className="text-[10px] text-gray-500 italic mt-0.5 line-clamp-1">{(item as Project).description}</div>
+                           )}
+                         </div>
                       </div>
                       <button 
                         onClick={() => manageModalType === 'project' ? handleDeleteProject(item.id) : handleDeleteMember(item.id)}
@@ -775,14 +907,22 @@ function App() {
                      onChange={e => setNewItemExtra(e.target.value)}
                    />
                  ) : (
-                   <div className="flex items-center gap-2">
-                      <span className="text-sm text-gray-500">Color:</span>
-                      <input 
-                        type="color" 
-                        value={newItemExtra || '#DBEAFE'} 
-                        onChange={e => setNewItemExtra(e.target.value)}
-                        className="h-8 w-8 rounded cursor-pointer border-none"
-                      />
+                   <div className="space-y-3">
+                     <textarea 
+                       className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500 min-h-[60px] resize-none"
+                       placeholder="Project Description"
+                       value={newItemDescription}
+                       onChange={e => setNewItemDescription(e.target.value)}
+                     />
+                     <div className="flex items-center gap-2">
+                        <span className="text-sm text-gray-500">Color:</span>
+                        <input 
+                          type="color" 
+                          value={newItemExtra || '#DBEAFE'} 
+                          onChange={e => setNewItemExtra(e.target.value)}
+                          className="h-8 w-8 rounded cursor-pointer border-none"
+                        />
+                     </div>
                    </div>
                  )}
                  <button 
